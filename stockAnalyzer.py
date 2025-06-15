@@ -4,6 +4,7 @@ import numpy as np
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import newsAnalyzer  # New import for sentiment and industry functions
+import config  # Assuming config.py contains DB_NAME
 
 def plot_stock_analysis(df_ticker, ticker, save_path='plots'):
     import os
@@ -170,7 +171,7 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
 
 
 def main():
-    conn = sqlite3.connect('stocks.db')
+    conn = sqlite3.connect(config.DB_NAME)
     df = get_stock_data(conn)
     if df.empty:
         print("No data retrieved.")

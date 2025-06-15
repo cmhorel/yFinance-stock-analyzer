@@ -6,11 +6,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import newsAnalyzer  # New import for news and industry functions
+import config  # Assuming config.py contains DB_NAME
+
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-DB_NAME = 'stocks.db'
+DB_NAME = config.DB_NAME
 THREADS = 10
 BATCH_SIZE = 5
 
@@ -204,7 +206,6 @@ def sync_ticker(ticker):
         industry_data = newsAnalyzer.get_industry_and_sector(ticker)
         print(industry_data)
         recent_news = newsAnalyzer.fetch_recent_news(ticker)
-        print(len(recent_news))
         news_sentiments = newsAnalyzer.analyze_news_sentiment(recent_news)
         newsAnalyzer.store_industry_and_news(ticker, stock_id, industry_data, news_sentiments, c)
 

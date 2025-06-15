@@ -1,11 +1,12 @@
-# newsAnalyzer.py
+## newsAnalyzer.py
 import sqlite3
 from datetime import datetime, timedelta
 import yfinance as yf
 from textblob import TextBlob
 import pandas as pd
+import config
 
-DB_NAME = 'stocks.db'
+DB_NAME = config.DB_NAME
 
 def get_sentiment_timeseries(stock_id, days_back=60):
     """

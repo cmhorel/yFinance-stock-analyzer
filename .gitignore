@@ -1,0 +1,4 @@
+plots/*.png
+data/*.db
+**.pyc
+# Ignore Python cache files
