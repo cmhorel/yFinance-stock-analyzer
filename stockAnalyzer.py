@@ -9,6 +9,7 @@ import plotly.express as px
 import newsAnalyzer
 import config
 import os
+import yfinance as yf  # NEW: Add import for real-time price fetching
 
 # Define sector color mapping
 SECTOR_COLORS = {
@@ -25,6 +26,13 @@ SECTOR_COLORS = {
     'Basic Materials': '#ff9896',
     'Unknown': '#c7c7c7'
 }
+
+def get_current_price(ticker):
+    """Fetch current price for a ticker using yfinance."""
+    try:
+        return yf.Ticker(ticker).history(period='1d')['Close'].iloc[-1]
+    except Exception:
+        return None  # Handle errors gracefully
 
 def get_sector_color(sector):
     """Get color for a given sector."""
@@ -266,13 +274,25 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
     sell_score += 1 if metrics['avg_sentiment'] < -0.1 else 0  # Boost for negative news
     sell_score += 1 if metrics['relative_momentum'] < 0 else 0  # Boost if underperforming industry
 
-    return {
+    current_price = get_current_price(df_ticker['symbol'].iloc[0])
+    if current_price is None:
+        current_price = df_ticker['close'].iloc[-1]  # Fallback to last known price
+
+    result = {
         'buy_score': buy_score, 
         'sell_score': sell_score, 
         'avg_sentiment': avg_sentiment, 
         'industry': industry,
-        'sector': sector
+        'sector': sector,
+        'current_price': current_price,  # NEW: Include for affordability checks
+        'is_held': df_ticker['symbol'].iloc[0] in (current_holdings or [])  # NEW: Flag if already held
     }
+    # NEW: Adjust scores based on affordability for buys
+    if available_cash > 0 and result['buy_score'] > 0:
+        affordable_quantity = int(available_cash / current_price) if current_price > 0 else 0
+        if affordable_quantity < 1:
+            result['buy_score'] = 0  # Not affordable, suppress recommendation
+    return result
 
 def create_sector_overview_plot(buy_candidates, sell_candidates, save_path='plots'):
     """Create an interactive sector overview plot."""
@@ -343,18 +363,18 @@ def main():
 
     buy_candidates = []
     sell_candidates = []
-
     grouped = df.groupby('symbol')
-
     for ticker, group in grouped:
-        result = analyze_ticker(group, df)
+        result = analyze_ticker(group, df, available_cash, current_holdings)  # MODIFIED: Pass new params
         if result is None:
             continue
+        current_price = result['current_price']
         
-        if result['buy_score'] >= 5:
-            buy_candidates.append((ticker, result['buy_score'], result['avg_sentiment'], result['industry'], result['sector']))
-        if result['sell_score'] >= 5:
-            sell_candidates.append((ticker, result['sell_score'], result['avg_sentiment'], result['industry'], result['sector']))
+        # MODIFIED: Include current_price and filter for affordability in buy_candidates
+        if result['buy_score'] >= 5 and current_price and available_cash >= current_price + 10:  # Account for fee
+            buy_candidates.append((ticker, result['buy_score'], result['avg_sentiment'], result['industry'], result['sector'], current_price))
+        if result['sell_score'] >= 5 and result['is_held']:  # Only recommend sell if held
+            sell_candidates.append((ticker, result['sell_score'], result['avg_sentiment'], result['industry'], result['sector'], current_price))
 
     buy_candidates.sort(key=lambda x: x[1], reverse=True)
     sell_candidates.sort(key=lambda x: x[1], reverse=True)
@@ -379,8 +399,10 @@ def main():
         plot_stock_analysis(df_ticker, ticker)
 
     conn.close()
-    return buy_tickers, sell_tickers
-
+    return {
+        'buy_candidates': buy_candidates[:10],  # List of tuples: (ticker, score, sentiment, industry, sector, current_price)
+        'sell_candidates': sell_candidates[:10]
+    }
 
 if __name__ == "__main__":
     main()
