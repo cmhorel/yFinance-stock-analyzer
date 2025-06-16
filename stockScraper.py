@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import newsAnalyzer  # New import for news and industry functions
 import config  # Assuming config.py contains DB_NAME
 import news_analyzer
 
@@ -172,6 +171,7 @@ def sync_ticker(ticker):
 
         ld = get_latest_date(ticker)
         start_date = (datetime.strptime(ld, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d') if ld else '2020-01-01'
+        start_date = min(start_date, datetime.now().strftime('%Y-%m-%d'))
 
         hist = yf.download(ticker, start=start_date, progress=False)
         if hist.empty:
@@ -205,7 +205,7 @@ def sync_ticker(ticker):
         conn.commit()
         conn.close()
         # NEW: Fetch and store industry/sector and news after price sync
-        industry_data = newsAnalyzer.get_industry_and_sector(ticker)
+        industry_data = news_analyzer.get_industry_and_sector(ticker)
         news_analyzer.process_stock_news(ticker, stock_id)
 
         
