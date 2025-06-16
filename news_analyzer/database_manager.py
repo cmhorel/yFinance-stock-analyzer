@@ -63,11 +63,11 @@ class NewsDatabase:
         cutoff_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
         
         with self.get_connection() as conn:
-            cursor = conn.execute('''
+            cursor = conn.execute(f'''
                 SELECT AVG(sentiment_score) 
                 FROM stock_news
-                WHERE stock_id = ? AND date >= ?
-            ''', (stock_id, cutoff_date))
+                WHERE stock_id = {stock_id} AND date >= {cutoff_date}
+            ''')
             
             result = cursor.fetchone()
             return result[0] if result[0] is not None else 0.0
@@ -77,15 +77,15 @@ class NewsDatabase:
         cutoff_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
         
         with self.get_connection() as conn:
-            query = '''
+            query = f'''
                 SELECT date, AVG(sentiment_score) as avg_sentiment
                 FROM stock_news
-                WHERE stock_id = ? AND date >= ?
+                WHERE stock_id = {stock_id} AND date >= {cutoff_date}
                 GROUP BY date
                 ORDER BY date ASC
             '''
-            df = pd.read_sql_query(query, conn, params=(stock_id, cutoff_date))
-        
+            df = pd.read_sql_query(query, conn)
+
         if df.empty:
             return pd.DataFrame({'date': [], 'avg_sentiment': []})
         

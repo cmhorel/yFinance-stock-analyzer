@@ -202,12 +202,13 @@ def sync_ticker(ticker):
                      int(row['Volume'])))
                 except Exception as e:
                     print(f"Error inserting row for {ticker} on {d}: {e}")
-
+        conn.commit()
+        conn.close()
         # NEW: Fetch and store industry/sector and news after price sync
         industry_data = newsAnalyzer.get_industry_and_sector(ticker)
         news_analyzer.process_stock_news(ticker, stock_id)
 
-        conn.commit()
+        
     except Exception as e:
         print(f"Error syncing {ticker}: {e}")
 
