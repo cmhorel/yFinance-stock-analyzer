@@ -7,6 +7,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 import newsAnalyzer  # New import for news and industry functions
 import config  # Assuming config.py contains DB_NAME
+import news_analyzer
 
 
 import warnings
@@ -201,15 +202,13 @@ def sync_ticker(ticker):
                      int(row['Volume'])))
                 except Exception as e:
                     print(f"Error inserting row for {ticker} on {d}: {e}")
-
+        conn.commit()
+        conn.close()
         # NEW: Fetch and store industry/sector and news after price sync
         industry_data = newsAnalyzer.get_industry_and_sector(ticker)
-        print(industry_data)
-        recent_news = newsAnalyzer.fetch_recent_news(ticker)
-        news_sentiments = newsAnalyzer.analyze_news_sentiment(recent_news)
-        newsAnalyzer.store_industry_and_news(ticker, stock_id, industry_data, news_sentiments, c)
+        news_analyzer.process_stock_news(ticker, stock_id)
 
-        conn.commit()
+        
     except Exception as e:
         print(f"Error syncing {ticker}: {e}")
 
