@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
-import newsAnalyzer
+import news_analyzer
 import config
 import os
 
@@ -43,7 +43,7 @@ def plot_stock_analysis(df_ticker, ticker, save_path='plots'):
     sector = df_ticker['sector'].iloc[0] if 'sector' in df_ticker.columns and pd.notna(df_ticker['sector'].iloc[0]) else 'Unknown'
     industry = df_ticker['industry'].iloc[0] if 'industry' in df_ticker.columns and pd.notna(df_ticker['industry'].iloc[0]) else 'Unknown'
     
-    avg_sentiment = newsAnalyzer.get_average_sentiment(stock_id)
+    avg_sentiment = news_analyzer.get_average_sentiment(stock_id)
     sector_color = get_sector_color(sector)
 
     # Create subplots
@@ -225,10 +225,10 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
 
 
     # NEW: Get average news sentiment from last 7 days
-    avg_sentiment = newsAnalyzer.get_average_sentiment(stock_id)
+    avg_sentiment = news_analyzer.get_average_sentiment(stock_id)
 
     # NEW: Get industry-average momentum for relative comparison
-    industry_avg_momentum = newsAnalyzer.get_industry_average_momentum(industry, stock_id, df_all) if industry != 'Unknown' else 0.0
+    industry_avg_momentum = news_analyzer.get_industry_average_momentum(industry, stock_id, df_all) if industry != 'Unknown' else 0.0
 
     latest_idx = df_ticker.index[-1]
     metrics = {
