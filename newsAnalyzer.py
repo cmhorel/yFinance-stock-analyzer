@@ -1,12 +1,83 @@
-## newsAnalyzer.py
+# newsAnalyzer.py
 import sqlite3
 from datetime import datetime, timedelta
 import yfinance as yf
 from textblob import TextBlob
 import pandas as pd
 import config
+from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
+import torch
 
 DB_NAME = config.DB_NAME
+
+# Initialize advanced sentiment analyzer
+try:
+    # Use a financial sentiment model if available, otherwise fall back to general sentiment
+    sentiment_analyzer = pipeline(
+        "sentiment-analysis",
+        model="ProsusAI/finbert",  # Financial BERT model
+        tokenizer="ProsusAI/finbert",
+        device=0 if torch.cuda.is_available() else -1
+    )
+    USE_FINBERT = True
+except:
+    try:
+        # Fallback to RoBERTa-based sentiment
+        sentiment_analyzer = pipeline(
+            "sentiment-analysis",
+            model="cardiffnlp/twitter-roberta-base-sentiment-latest",
+            device=0 if torch.cuda.is_available() else -1
+        )
+        USE_FINBERT = False
+    except:
+        # Final fallback to TextBlob
+        sentiment_analyzer = None
+        USE_FINBERT = False
+
+def analyze_sentiment_advanced(text):
+    """
+    Analyze sentiment using transformer models with fallback to TextBlob.
+    Returns sentiment score between -1 (negative) and 1 (positive).
+    """
+    if sentiment_analyzer is None:
+        # Fallback to TextBlob
+        analysis = TextBlob(text)
+        return analysis.sentiment.polarity
+    
+    try:
+        # Truncate text to model's max length (usually 512 tokens)
+        text = text[:2000]  # Conservative truncation
+        
+        result = sentiment_analyzer(text)[0]
+        
+        if USE_FINBERT:
+            # FinBERT returns positive, negative, neutral
+            label = result['label'].lower()
+            score = result['score']
+            
+            if label == 'positive':
+                return score
+            elif label == 'negative':
+                return -score
+            else:  # neutral
+                return 0.0
+        else:
+            # RoBERTa returns LABEL_0 (negative), LABEL_1 (neutral), LABEL_2 (positive)
+            label = result['label']
+            score = result['score']
+            
+            if label == 'LABEL_2':  # positive
+                return score
+            elif label == 'LABEL_0':  # negative
+                return -score
+            else:  # neutral
+                return 0.0
+                
+    except Exception as e:
+        print(f"Error in advanced sentiment analysis: {e}")
+        # Fallback to TextBlob
+        analysis = TextBlob(text)
+        return analysis.sentiment.polarity
 
 def get_sentiment_timeseries(stock_id, days_back=60):
     """
@@ -65,20 +136,21 @@ def fetch_recent_news(ticker, days_back=7):
 
 def analyze_news_sentiment(news_items):
     """
-    Analyzes sentiment for a list of news items using TextBlob.
+    Analyzes sentiment for a list of news items using advanced transformer models.
     Returns a list of dicts with title, summary, and sentiment score (-1 to 1).
     """
     sentiments = []
     for item in news_items:
         text = f"{item['content'].get('title', '')} {item['content']['provider'].get('displayName', '')} {item['content'].get('summary', '')}"
-        # if not text.strip():
-        #     continue
-        analysis = TextBlob(text)
+        
+        # Use advanced sentiment analysis
+        sentiment_score = analyze_sentiment_advanced(text)
+        
         sentiments.append({
             'title': item['content'].get('title', 'N/A'),
             'summary': item['content'].get('summary', 'N/A'),
-            'publish_date':datetime.strptime(item['content']['pubDate'], '%Y-%m-%dT%H:%M:%SZ') if 'pubDate' in item['content']  else 'N/A',
-            'sentiment_score': analysis.sentiment.polarity  # Range: -1 (negative) to 1 (positive)
+            'publish_date': datetime.strptime(item['content']['pubDate'], '%Y-%m-%dT%H:%M:%SZ') if 'pubDate' in item['content'] else 'N/A',
+            'sentiment_score': sentiment_score
         })
     return sentiments
 

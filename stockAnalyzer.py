@@ -1,13 +1,37 @@
+# stockAnalyzer.py
 import sqlite3
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
-import newsAnalyzer  # New import for sentiment and industry functions
-import config  # Assuming config.py contains DB_NAME
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import plotly.express as px
+import newsAnalyzer
+import config
+import os
+
+# Define sector color mapping
+SECTOR_COLORS = {
+    'Technology': '#1f77b4',
+    'Healthcare': '#ff7f0e', 
+    'Financial Services': '#2ca02c',
+    'Consumer Cyclical': '#d62728',
+    'Communication Services': '#9467bd',
+    'Industrials': '#8c564b',
+    'Consumer Defensive': '#e377c2',
+    'Energy': '#7f7f7f',
+    'Utilities': '#bcbd22',
+    'Real Estate': '#17becf',
+    'Basic Materials': '#ff9896',
+    'Unknown': '#c7c7c7'
+}
+
+def get_sector_color(sector):
+    """Get color for a given sector."""
+    return SECTOR_COLORS.get(sector, SECTOR_COLORS['Unknown'])
 
 def plot_stock_analysis(df_ticker, ticker, save_path='plots'):
-    import os
+    """Create interactive Plotly chart with sector-based coloring."""
     os.makedirs(save_path, exist_ok=True)
 
     df_ticker = df_ticker.copy()
@@ -16,52 +40,125 @@ def plot_stock_analysis(df_ticker, ticker, save_path='plots'):
     df_ticker['RSI'] = calculate_rsi(df_ticker['close'])
 
     stock_id = df_ticker['stock_id'].iloc[0]
+    sector = df_ticker['sector'].iloc[0] if 'sector' in df_ticker.columns and pd.notna(df_ticker['sector'].iloc[0]) else 'Unknown'
+    industry = df_ticker['industry'].iloc[0] if 'industry' in df_ticker.columns and pd.notna(df_ticker['industry'].iloc[0]) else 'Unknown'
+    
     avg_sentiment = newsAnalyzer.get_average_sentiment(stock_id)
-    print(avg_sentiment)
+    sector_color = get_sector_color(sector)
 
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+    # Create subplots
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.05,
+        subplot_titles=(f'{ticker} - {sector} ({industry})', 'RSI', 'Volume'),
+        row_heights=[0.6, 0.2, 0.2]
+    )
 
     # Price and Moving Averages
-    ax1.plot(df_ticker['date'], df_ticker['close'], label='Close Price', color='blue')
-    ax1.plot(df_ticker['date'], df_ticker['MA20'], label='20-day MA', color='orange')
-    ax1.plot(df_ticker['date'], df_ticker['MA50'], label='50-day MA', color='green')
-    ax1.set_title(f'{ticker} Price with Moving Averages and Sentiment')
-    ax1.set_ylabel('Price ($)')
-    ax1.legend(loc='upper left')
-    ax1.grid(True)
+    fig.add_trace(
+        go.Scatter(
+            x=df_ticker['date'], 
+            y=df_ticker['close'],
+            mode='lines',
+            name='Close Price',
+            line=dict(color=sector_color, width=2),
+            hovertemplate='<b>%{fullData.name}</b><br>Date: %{x}<br>Price: $%{y:.2f}<extra></extra>'
+        ),
+        row=1, col=1
+    )
 
-    # RSI overlay
-    ax1_rsi = ax1.twinx()
-    ax1_rsi.plot(df_ticker['date'], df_ticker['RSI'], label='RSI', color='purple', linestyle='--')
-    ax1_rsi.axhline(70, color='red', linestyle='--', alpha=0.5)
-    ax1_rsi.axhline(30, color='green', linestyle='--', alpha=0.5)
-    ax1_rsi.set_ylabel('RSI')
-    ax1_rsi.legend(loc='upper right')
+    fig.add_trace(
+        go.Scatter(
+            x=df_ticker['date'], 
+            y=df_ticker['MA20'],
+            mode='lines',
+            name='20-day MA',
+            line=dict(color='orange', width=1),
+            hovertemplate='<b>20-day MA</b><br>Date: %{x}<br>Value: $%{y:.2f}<extra></extra>'
+        ),
+        row=1, col=1
+    )
 
-    # Volume bars
-    ax2.bar(df_ticker['date'], df_ticker['volume'], color='gray')
-    ax2.set_ylabel('Volume')
-    ax2.set_xlabel('Date')
-    ax2.grid(True)
+    fig.add_trace(
+        go.Scatter(
+            x=df_ticker['date'], 
+            y=df_ticker['MA50'],
+            mode='lines',
+            name='50-day MA',
+            line=dict(color='green', width=1),
+            hovertemplate='<b>50-day MA</b><br>Date: %{x}<br>Value: $%{y:.2f}<extra></extra>'
+        ),
+        row=1, col=1
+    )
 
-    # Add sentiment annotation on the far right
+    # RSI
+    fig.add_trace(
+        go.Scatter(
+            x=df_ticker['date'], 
+            y=df_ticker['RSI'],
+            mode='lines',
+            name='RSI',
+            line=dict(color='purple', width=1),
+            hovertemplate='<b>RSI</b><br>Date: %{x}<br>RSI: %{y:.1f}<extra></extra>'
+        ),
+        row=2, col=1
+    )
+
+    # RSI reference lines
+    fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=2, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=2, col=1)
+
+    # Volume
+    fig.add_trace(
+        go.Bar(
+            x=df_ticker['date'], 
+            y=df_ticker['volume'],
+            name='Volume',
+            marker_color='lightgray',
+            hovertemplate='<b>Volume</b><br>Date: %{x}<br>Volume: %{y:,.0f}<extra></extra>'
+        ),
+        row=3, col=1
+    )
+
+    # Add sentiment annotation
     sentiment_color = 'green' if avg_sentiment > 0 else 'red' if avg_sentiment < 0 else 'gray'
-    sentiment_text = f'Sentiment: {avg_sentiment:.2f}'
-    max_y = df_ticker['close'].max()
-    min_y = df_ticker['close'].min()
-    y_pos = max_y - (max_y - min_y) * 0.1  # 10% down from the top
+    sentiment_text = f'Avg Sentiment: {avg_sentiment:.3f}'
+    
+    fig.add_annotation(
+        x=df_ticker['date'].iloc[-1],
+        y=df_ticker['close'].max(),
+        text=sentiment_text,
+        showarrow=True,
+        arrowhead=2,
+        arrowcolor=sentiment_color,
+        bgcolor="white",
+        bordercolor=sentiment_color,
+        borderwidth=2,
+        font=dict(color=sentiment_color, size=12),
+        row=1, col=1
+    )
 
-    ax1.annotate(sentiment_text, 
-                 xy=(df_ticker['date'].iloc[-1], y_pos),
-                 xytext=(df_ticker['date'].iloc[-1], y_pos),
-                 fontsize=12, color=sentiment_color,
-                 bbox=dict(boxstyle="round,pad=0.3", fc="white", ec=sentiment_color, lw=2))
+    # Update layout
+    fig.update_layout(
+        title=f'{ticker} Stock Analysis - {sector} Sector',
+        xaxis_title='Date',
+        height=800,
+        showlegend=True,
+        hovermode='x unified'
+    )
 
-    plt.tight_layout()
-    filename = os.path.join(save_path, f"{ticker}_analysis.png")
-    plt.savefig(filename)
-    plt.close(fig)
-    print(f"Saved plot to {filename}")
+    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+    fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
+    fig.update_yaxes(title_text="Volume", row=3, col=1)
+
+    # Save as HTML
+    filename = os.path.join(save_path, f"{ticker}_analysis.html")
+    fig.write_html(filename)
+    print(f"Saved interactive plot to {filename}")
+
+    return fig
+
 
 
 def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
@@ -81,7 +178,7 @@ def get_stock_data(conn, months_back=6):
 
     query = f"""
     SELECT st.id AS stock_id, st.symbol, sp.date, sp.close, sp.volume,
-           si.industry 
+           si.industry, si.sector
     FROM stock_prices sp
     JOIN stocks st ON sp.stock_id = st.id
     LEFT JOIN stock_info si ON st.id = si.stock_id  
@@ -105,7 +202,9 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
 
     stock_id = df_ticker['stock_id'].iloc[0]
     industry = df_ticker['industry'].iloc[0] if 'industry' in df_ticker.columns and pd.notna(df_ticker['industry'].iloc[0]) else 'Unknown'
-
+    stock_id = df_ticker['stock_id'].iloc[0]
+    industry = df_ticker['industry'].iloc[0] if 'industry' in df_ticker.columns and pd.notna(df_ticker['industry'].iloc[0]) else 'Unknown'
+    sector = df_ticker['sector'].iloc[0] if 'sector' in df_ticker.columns and pd.notna(df_ticker['sector'].iloc[0]) else 'Unknown'
 
     close = df_ticker['close']
     volume = df_ticker['volume']
@@ -167,8 +266,73 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
     sell_score += 1 if metrics['avg_sentiment'] < -0.1 else 0  # Boost for negative news
     sell_score += 1 if metrics['relative_momentum'] < 0 else 0  # Boost if underperforming industry
 
-    return {'buy_score': buy_score, 'sell_score': sell_score, 'avg_sentiment': avg_sentiment, 'industry': industry}
+    return {
+        'buy_score': buy_score, 
+        'sell_score': sell_score, 
+        'avg_sentiment': avg_sentiment, 
+        'industry': industry,
+        'sector': sector
+    }
 
+def create_sector_overview_plot(buy_candidates, sell_candidates, save_path='plots'):
+    """Create an interactive sector overview plot."""
+    os.makedirs(save_path, exist_ok=True)
+    
+    # Combine all candidates
+    all_candidates = []
+    for ticker, score, sentiment, industry, sector in buy_candidates:
+        all_candidates.append({
+            'ticker': ticker,
+            'score': score,
+            'sentiment': sentiment,
+            'industry': industry,
+            'sector': sector,
+            'recommendation': 'Buy'
+        })
+    
+    for ticker, score, sentiment, industry, sector in sell_candidates:
+        all_candidates.append({
+            'ticker': ticker,
+            'score': score,
+            'sentiment': sentiment,
+            'industry': industry,
+            'sector': sector,
+            'recommendation': 'Sell'
+        })
+    
+    if not all_candidates:
+        return
+    
+    df_candidates = pd.DataFrame(all_candidates)
+    
+    # Create scatter plot
+    fig = px.scatter(
+        df_candidates,
+        x='sentiment',
+        y='score',
+        color='sector',
+        symbol='recommendation',
+        size='score',
+        hover_data=['ticker', 'industry'],
+        title='Stock Recommendations by Sector and Sentiment',
+        labels={
+            'sentiment': 'Average Sentiment Score',
+            'score': 'Recommendation Score',
+            'sector': 'Sector'
+        },
+        color_discrete_map=SECTOR_COLORS
+    )
+    
+    fig.update_layout(
+        height=600,
+        showlegend=True
+    )
+    
+    filename = os.path.join(save_path, "sector_overview.html")
+    fig.write_html(filename)
+    print(f"Saved sector overview plot to {filename}")
+    
+    return fig
 
 def main():
     conn = sqlite3.connect(config.DB_NAME)
@@ -183,14 +347,14 @@ def main():
     grouped = df.groupby('symbol')
 
     for ticker, group in grouped:
-        result = analyze_ticker(group, df)  # NEW: Pass full df for industry comparisons
+        result = analyze_ticker(group, df)
         if result is None:
             continue
-        # NEW: Include sentiment and industry in output for transparency
-        if result['buy_score'] >= 5:  # Adjusted threshold to account for new factors (max now 7)
-            buy_candidates.append((ticker, result['buy_score'], result['avg_sentiment'], result['industry']))
+        
+        if result['buy_score'] >= 5:
+            buy_candidates.append((ticker, result['buy_score'], result['avg_sentiment'], result['industry'], result['sector']))
         if result['sell_score'] >= 5:
-            sell_candidates.append((ticker, result['sell_score'], result['avg_sentiment'], result['industry']))
+            sell_candidates.append((ticker, result['sell_score'], result['avg_sentiment'], result['industry'], result['sector']))
 
     buy_candidates.sort(key=lambda x: x[1], reverse=True)
     sell_candidates.sort(key=lambda x: x[1], reverse=True)
@@ -198,15 +362,18 @@ def main():
     buy_tickers = [t[0] for t in buy_candidates[:10]]
     sell_tickers = [t[0] for t in sell_candidates[:10]]
 
-    # NEW: Enhanced output with sentiment and industry details
+    # Enhanced output with sector information
     print("Buy recommendations:")
     for t in buy_candidates[:10]:
-        print(f"{t[0]} (Score: {t[1]}, Avg Sentiment: {t[2]:.2f}, Industry: {t[3]})")
+        print(f"{t[0]} (Score: {t[1]}, Sentiment: {t[2]:.3f}, Sector: {t[4]}, Industry: {t[3]})")
     print("Sell recommendations:")
     for t in sell_candidates[:10]:
-        print(f"{t[0]} (Score: {t[1]}, Avg Sentiment: {t[2]:.2f}, Industry: {t[3]})")
+        print(f"{t[0]} (Score: {t[1]}, Sentiment: {t[2]:.3f}, Sector: {t[4]}, Industry: {t[3]})")
 
-    # Plot fundamentals for each buy and sell ticker
+    # Create sector overview plot
+    create_sector_overview_plot(buy_candidates, sell_candidates)
+
+    # Plot individual stock analyses
     for ticker in buy_tickers + sell_tickers:
         df_ticker = grouped.get_group(ticker)
         plot_stock_analysis(df_ticker, ticker)
