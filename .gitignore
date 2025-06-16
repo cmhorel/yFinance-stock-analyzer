@@ -3,3 +3,4 @@ data/*.db
 **.pyc
 # Ignore Python cache files
 **.html
+*.zip
