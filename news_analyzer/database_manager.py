@@ -61,7 +61,11 @@ class NewsDatabase:
     def get_average_sentiment(self, stock_id: int, days_back: int = 7) -> float:
         """Get average sentiment for a stock over specified days."""
         cutoff_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
-        
+        print(f'''
+                SELECT AVG(sentiment_score) 
+                FROM stock_news
+                WHERE stock_id = {stock_id} AND date >= {cutoff_date}
+            ''')
         with self.get_connection() as conn:
             cursor = conn.execute(f'''
                 SELECT AVG(sentiment_score) 

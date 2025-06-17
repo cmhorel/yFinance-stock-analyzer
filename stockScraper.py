@@ -1,3 +1,4 @@
+# stockScraper.py
 import sqlite3
 import yfinance as yf
 import pandas as pd
@@ -5,9 +6,9 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import config  # Assuming config.py contains DB_NAME
+import config
 import news_analyzer
-
+from database_manager import db_manager  # NEW: Import centralized database manager
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -73,18 +74,8 @@ def initialize_db():
 
 
 def get_latest_date(symbol):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
-    c.execute('SELECT id FROM stocks WHERE symbol = ?', (symbol,))
-    stock_id_row = c.fetchone()
-    if not stock_id_row:
-        conn.close()
-        return None
-    stock_id = stock_id_row[0]
-    c.execute('SELECT MAX(date) FROM stock_prices WHERE stock_id = ?', (stock_id,))
-    d = c.fetchone()[0]
-    conn.close()
-    return d
+    """Get latest date using database manager."""
+    return db_manager.get_latest_stock_price_date(symbol)
 
 def get_nasdaq_100_tickers():
     tables = pd.read_html('https://en.wikipedia.org/wiki/NASDAQ-100')
@@ -161,13 +152,9 @@ def plot_all(tickers):
     plt.show()
 
 def sync_ticker(ticker):
-    conn = sqlite3.connect(DB_NAME)
-    c = conn.cursor()
     try:
-        # Ensure ticker is in stocks table
-        c.execute('INSERT OR IGNORE INTO stocks (symbol) VALUES (?)', (ticker,))
-        c.execute('SELECT id FROM stocks WHERE symbol = ?', (ticker,))
-        stock_id = c.fetchone()[0]
+        # MODIFIED: Use database manager for stock operations
+        stock_id = db_manager.get_or_create_stock_id(ticker)
 
         ld = get_latest_date(ticker)
         start_date = (datetime.strptime(ld, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d') if ld else '2020-01-01'
@@ -176,8 +163,9 @@ def sync_ticker(ticker):
         hist = yf.download(ticker, start=start_date, progress=False)
         if hist.empty:
             print(f"No data for {ticker}")
-            # NEW: Still attempt to fetch industry and news even if no price data
         else:
+            # Prepare price data for bulk insert
+            price_data = []
             for idx, row in hist.iterrows():
                 d = idx.strftime('%Y-%m-%d')
                 if d < start_date:
@@ -187,33 +175,28 @@ def sync_ticker(ticker):
                 if pd.isna(row[['Open', 'High', 'Low', 'Close', 'Volume']]).any():
                     continue
 
-                try:
-                    c.execute('''
-                        INSERT OR IGNORE INTO stock_prices
-                        (stock_id, date, open, high, low, close, volume)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ''',
-                    (stock_id,
-                     d,
-                     float(row['Open']),
-                     float(row['High']),
-                     float(row['Low']),
-                     float(row['Close']),
-                     int(row['Volume'])))
-                except Exception as e:
-                    print(f"Error inserting row for {ticker} on {d}: {e}")
-        conn.commit()
-        conn.close()
+                price_data.append({
+                    'date': d,
+                    'open': float(row['Open']),
+                    'high': float(row['High']),
+                    'low': float(row['Low']),
+                    'close': float(row['Close']),
+                    'volume': int(row['Volume'])
+                })
+            
+            # MODIFIED: Use database manager to store prices
+            if price_data:
+                db_manager.store_stock_prices(stock_id, price_data)
+        
         # NEW: Fetch and store industry/sector and news after price sync
         industry_data = news_analyzer.get_industry_and_sector(ticker)
+        if industry_data:
+            db_manager.store_stock_info(stock_id, industry_data['sector'], industry_data['industry'])
+        
         news_analyzer.process_stock_news(ticker, stock_id)
-
         
     except Exception as e:
         print(f"Error syncing {ticker}: {e}")
-
-    finally:
-        conn.close()
 
 
 def sync_all_tickers_sequential(all_tickers):

@@ -5,7 +5,7 @@ News analysis module for stock sentiment and industry analysis.
 import logging
 from .news_processor import NewsProcessor
 from .industry_analyzer import IndustryAnalyzer
-from .database_manager import NewsDatabase
+from database_manager import db_manager  # NEW: Import centralized database manager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -46,22 +46,19 @@ def analyze_news_sentiment(news_items):
     return processor._analyze_news_sentiments(news_items)
 
 def store_industry_and_news(ticker: str, stock_id: int, industry_data, news_sentiments, c=None):
-    """Store industry and news data (backward compatibility)."""
-    processor = get_news_processor()
+    """Store industry and news data using database manager."""
     if industry_data:
-        processor.db.store_stock_info(stock_id, industry_data['sector'], industry_data['industry'])
+        db_manager.store_stock_info(stock_id, industry_data['sector'], industry_data['industry'])
     if news_sentiments:
-        processor.db.store_news_sentiments(stock_id, news_sentiments)
+        db_manager.store_news_sentiments(stock_id, news_sentiments)
 
 def get_average_sentiment(stock_id: int, days_back: int = 7) -> float:
-    """Get average sentiment for a stock."""
-    processor = get_news_processor()
-    return processor.get_average_sentiment(stock_id, days_back)
+    """Get average sentiment for a stock using database manager."""
+    return db_manager.get_average_sentiment(stock_id, days_back)
 
 def get_sentiment_timeseries(stock_id: int, days_back: int = 60):
-    """Get sentiment time series for a stock."""
-    processor = get_news_processor()
-    return processor.get_sentiment_timeseries(stock_id, days_back)
+    """Get sentiment time series for a stock using database manager."""
+    return db_manager.get_sentiment_timeseries(stock_id, days_back)
 
 def get_industry_average_momentum(industry: str, exclude_stock_id: int, df_all):
     """Get industry average momentum."""

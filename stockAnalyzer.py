@@ -9,6 +9,7 @@ import plotly.express as px
 import news_analyzer
 import config
 import os
+from database_manager import db_manager  # NEW: Import centralized database manager
 
 # Define sector color mapping
 SECTOR_COLORS = {
@@ -171,28 +172,9 @@ def calculate_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     rsi = 100 - (100 / (1 + rs))
     return rsi.fillna(50)  # Neutral RSI for initial points
 
-
-def get_stock_data(conn, months_back=6):
-    cutoff_date = datetime.now() - timedelta(days=months_back * 30)
-    cutoff_str = cutoff_date.strftime('%Y-%m-%d')
-
-    query = f"""
-    SELECT st.id AS stock_id, st.symbol, sp.date, sp.close, sp.volume,
-           si.industry, si.sector
-    FROM stock_prices sp
-    JOIN stocks st ON sp.stock_id = st.id
-    LEFT JOIN stock_info si ON st.id = si.stock_id  
-    WHERE sp.date >= ?
-    ORDER BY st.symbol, sp.date
-    """
-    try:
-        df = pd.read_sql_query(query, conn, params=(cutoff_str,))
-        df['date'] = pd.to_datetime(df['date'])
-        return df
-    except Exception as e:
-        print(f"SQL query error: {e}")
-        return pd.DataFrame()
-
+def get_stock_data(conn=None, months_back=6):  # MODIFIED: Make conn optional
+    """Get stock data using centralized database manager."""
+    return db_manager.get_stock_data(months_back)
 
 
 def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparisons
@@ -225,7 +207,7 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
 
 
     # NEW: Get average news sentiment from last 7 days
-    avg_sentiment = news_analyzer.get_average_sentiment(stock_id)
+    avg_sentiment = db_manager.get_average_sentiment(stock_id)
 
     # NEW: Get industry-average momentum for relative comparison
     industry_avg_momentum = news_analyzer.get_industry_average_momentum(industry, stock_id, df_all) if industry != 'Unknown' else 0.0
@@ -335,8 +317,7 @@ def create_sector_overview_plot(buy_candidates, sell_candidates, save_path='plot
     return fig
 
 def main():
-    conn = sqlite3.connect(config.DB_NAME)
-    df = get_stock_data(conn)
+    df = get_stock_data()
     if df.empty:
         print("No data retrieved.")
         return
@@ -378,7 +359,6 @@ def main():
         df_ticker = grouped.get_group(ticker)
         plot_stock_analysis(df_ticker, ticker)
 
-    conn.close()
     return buy_tickers, sell_tickers
 
 

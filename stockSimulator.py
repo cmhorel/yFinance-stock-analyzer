@@ -10,6 +10,8 @@ import yfinance as yf
 import stockAnalyzer
 import config
 import os
+from database_manager import db_manager  # NEW: Import centralized database manager
+
 
 def initialize_portfolio_db():
     """Initialize the portfolio simulation database tables."""
@@ -19,7 +21,7 @@ def initialize_portfolio_db():
     # Create portfolio_state table to track overall portfolio
     c.execute('''
         CREATE TABLE IF NOT EXISTS portfolio_state (
-            id INTEGER PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
             cash_balance REAL,
             total_portfolio_value REAL,
             last_transaction_date TEXT,
@@ -69,23 +71,8 @@ def initialize_portfolio_db():
     conn.close()
 
 def get_portfolio_state():
-    """Get current portfolio state."""
-    conn = sqlite3.connect(config.DB_NAME)
-    c = conn.cursor()
-    
-    c.execute('SELECT * FROM portfolio_state ORDER BY id DESC LIMIT 1')
-    portfolio = c.fetchone()
-    
-    c.execute('''
-        SELECT ph.*, s.symbol 
-        FROM portfolio_holdings ph
-        JOIN stocks s ON ph.stock_id = s.id
-        WHERE ph.quantity > 0
-    ''')
-    holdings = c.fetchall()
-    
-    conn.close()
-    return portfolio, holdings
+    """Get current portfolio state using database manager."""
+    return db_manager.get_portfolio_state()
 
 def get_current_stock_prices(symbols):
     """Get current stock prices for given symbols."""
@@ -133,13 +120,14 @@ def calculate_current_portfolio_value():
 def can_make_transactions():
     """Check if enough time has passed since last transaction."""
     portfolio, _ = get_portfolio_state()
+    print(portfolio)
     if not portfolio or not portfolio[3]:  # No last transaction date
         return True
     
     last_transaction = datetime.strptime(portfolio[3], '%Y-%m-%d')
     days_since = (datetime.now() - last_transaction).days
     
-    return days_since >= 7
+    return days_since >= 1
 
 def get_portfolio_report():
     """Generate a brief portfolio report."""
@@ -179,112 +167,51 @@ def get_portfolio_report():
     return report
 
 def execute_buy_transaction(stock_id, symbol, quantity, price_per_share):
-    """Execute a buy transaction."""
-    conn = sqlite3.connect(config.DB_NAME)
-    c = conn.cursor()
-    
+    """Execute a buy transaction using database manager."""
     brokerage_fee = 10.0
     total_cost = (quantity * price_per_share) + brokerage_fee
     
     # Record transaction
-    c.execute('''
-        INSERT INTO portfolio_transactions 
-        (stock_id, symbol, transaction_type, quantity, price_per_share, total_amount, brokerage_fee, transaction_date)
-        VALUES (?, ?, 'BUY', ?, ?, ?, ?, ?)
-    ''', (stock_id, symbol, quantity, price_per_share, total_cost, brokerage_fee, datetime.now().strftime('%Y-%m-%d')))
+    db_manager.record_transaction(
+        stock_id, symbol, 'BUY', quantity, price_per_share, 
+        total_cost, brokerage_fee, datetime.now().strftime('%Y-%m-%d')
+    )
     
     # Update or insert holding
-    c.execute('SELECT * FROM portfolio_holdings WHERE stock_id = ?', (stock_id,))
-    existing_holding = c.fetchone()
-    
-    if existing_holding:
-        # Update existing holding
-        old_quantity = existing_holding[2]
-        old_total_cost = existing_holding[4]
-        new_quantity = old_quantity + quantity
-        new_total_cost = old_total_cost + total_cost
-        new_avg_cost = new_total_cost / new_quantity
-        
-        c.execute('''
-            UPDATE portfolio_holdings 
-            SET quantity = ?, avg_cost_per_share = ?, total_cost = ?
-            WHERE stock_id = ?
-        ''', (new_quantity, new_avg_cost, new_total_cost, stock_id))
-    else:
-        # Insert new holding
-        c.execute('''
-            INSERT INTO portfolio_holdings (stock_id, symbol, quantity, avg_cost_per_share, total_cost)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (stock_id, symbol, quantity, price_per_share, total_cost))
+    db_manager.update_or_create_holding(stock_id, symbol, quantity, price_per_share, total_cost)
     
     # Update portfolio cash balance
-    c.execute('SELECT cash_balance FROM portfolio_state ORDER BY id DESC LIMIT 1')
-    current_cash = c.fetchone()[0]
+    portfolio, _ = get_portfolio_state()
+    current_cash = portfolio[1]
     new_cash = current_cash - total_cost
     
-    c.execute('''
-        UPDATE portfolio_state 
-        SET cash_balance = ?, last_transaction_date = ?
-        WHERE id = (SELECT MAX(id) FROM portfolio_state)
-    ''', (new_cash, datetime.now().strftime('%Y-%m-%d')))
-    
-    conn.commit()
-    conn.close()
+    db_manager.update_portfolio_cash(new_cash, datetime.now().strftime('%Y-%m-%d'))
     
     print(f"BUY: {quantity} shares of {symbol} @ ${price_per_share:.2f} (Total: ${total_cost:.2f})")
 
 def execute_sell_transaction(stock_id, symbol, quantity, price_per_share):
-    """Execute a sell transaction."""
-    conn = sqlite3.connect(config.DB_NAME)
-    c = conn.cursor()
-    
+    """Execute a sell transaction using database manager."""
     brokerage_fee = 10.0
     total_proceeds = (quantity * price_per_share) - brokerage_fee
     
     # Record transaction
-    c.execute('''
-        INSERT INTO portfolio_transactions 
-        (stock_id, symbol, transaction_type, quantity, price_per_share, total_amount, brokerage_fee, transaction_date)
-        VALUES (?, ?, 'SELL', ?, ?, ?, ?, ?)
-    ''', (stock_id, symbol, quantity, price_per_share, total_proceeds, brokerage_fee, datetime.now().strftime('%Y-%m-%d')))
+    db_manager.record_transaction(
+        stock_id, symbol, 'SELL', quantity, price_per_share, 
+        total_proceeds, brokerage_fee, datetime.now().strftime('%Y-%m-%d')
+    )
     
     # Update holding
-    c.execute('SELECT * FROM portfolio_holdings WHERE stock_id = ?', (stock_id,))
-    holding = c.fetchone()
-    
-    if holding:
-        old_quantity = holding[2]
-        old_total_cost = holding[4]
-        new_quantity = old_quantity - quantity
-        
-        if new_quantity <= 0:
-            # Remove holding entirely
-            c.execute('DELETE FROM portfolio_holdings WHERE stock_id = ?', (stock_id,))
-        else:
-            # Reduce holding proportionally
-            cost_per_share = old_total_cost / old_quantity
-            new_total_cost = new_quantity * cost_per_share
-            c.execute('''
-                UPDATE portfolio_holdings 
-                SET quantity = ?, total_cost = ?
-                WHERE stock_id = ?
-            ''', (new_quantity, new_total_cost, stock_id))
+    db_manager.reduce_or_remove_holding(stock_id, quantity)
     
     # Update portfolio cash balance
-    c.execute('SELECT cash_balance FROM portfolio_state ORDER BY id DESC LIMIT 1')
-    current_cash = c.fetchone()[0]
+    portfolio, _ = get_portfolio_state()
+    current_cash = portfolio[1]
     new_cash = current_cash + total_proceeds
     
-    c.execute('''
-        UPDATE portfolio_state 
-        SET cash_balance = ?, last_transaction_date = ?
-        WHERE id = (SELECT MAX(id) FROM portfolio_state)
-    ''', (new_cash, datetime.now().strftime('%Y-%m-%d')))
-    
-    conn.commit()
-    conn.close()
+    db_manager.update_portfolio_cash(new_cash, datetime.now().strftime('%Y-%m-%d'))
     
     print(f"SELL: {quantity} shares of {symbol} @ ${price_per_share:.2f} (Proceeds: ${total_proceeds:.2f})")
+
 
 def get_affordable_recommendations(buy_candidates, cash_available):
     """Filter buy recommendations to only include affordable stocks."""
@@ -311,10 +238,8 @@ def execute_portfolio_transactions():
     portfolio, holdings = get_portfolio_state()
     cash_balance = portfolio[1]
     
-    # Get stock recommendations
-    conn = sqlite3.connect(config.DB_NAME)
-    df = stockAnalyzer.get_stock_data(conn)
-    conn.close()
+    # MODIFIED: Use database manager for stock data
+    df = db_manager.get_stock_data()
     
     if df.empty:
         print("No stock data available for analysis.")
@@ -340,7 +265,7 @@ def execute_portfolio_transactions():
     sell_candidates.sort(key=lambda x: x[1], reverse=True)
     
     # Execute sell transactions first
-    held_symbols = {holding[6]: holding for holding in holdings}  # symbol -> holding data
+    held_symbols = {holding[5]: holding for holding in holdings}  # symbol -> holding data
     
     for sell_candidate in sell_candidates[:5]:  # Limit to top 5 sell candidates
         symbol = sell_candidate[0]
@@ -359,53 +284,34 @@ def execute_portfolio_transactions():
     # Execute buy transactions
     affordable_buys = get_affordable_recommendations(buy_candidates[:10], cash_balance)
     
-    # Get stock IDs for buy candidates
-    conn = sqlite3.connect(config.DB_NAME)
-    c = conn.cursor()
-    
-    for buy_candidate in affordable_buys[:5]:  # Limit to top 5 affordable buys
+    # MODIFIED: Use database manager for stock IDs
+    for buy_candidate in affordable_buys[:5]:
         symbol = buy_candidate[0]
-        current_price = buy_candidate[-1]  # Price was added by get_affordable_recommendations
+        current_price = buy_candidate[-1]
         
         # Calculate how many shares we can afford
-        max_affordable = int((cash_balance - 10) / current_price)  # Account for brokerage fee
+        max_affordable = int((cash_balance - 10) / current_price)
         
         if max_affordable > 0:
-            # Buy a reasonable amount (limit to $1000 per position or 10% of cash, whichever is smaller)
             max_position_value = min(1000, cash_balance * 0.1)
             target_quantity = min(max_affordable, int(max_position_value / current_price))
             
             if target_quantity > 0:
-                # Get stock ID
-                c.execute('SELECT id FROM stocks WHERE symbol = ?', (symbol,))
-                stock_id_row = c.fetchone()
-                if stock_id_row:
-                    stock_id = stock_id_row[0]
-                    execute_buy_transaction(stock_id, symbol, target_quantity, current_price)
-                    cash_balance -= (target_quantity * current_price) + 10  # Update available cash
-    
-    conn.close()
+                # MODIFIED: Use database manager to get stock ID
+                stock_id = db_manager.get_or_create_stock_id(symbol)
+                execute_buy_transaction(stock_id, symbol, target_quantity, current_price)
+                cash_balance -= (target_quantity * current_price) + 10
     
     # Update total portfolio value
     new_total_value = calculate_current_portfolio_value()
-    conn = sqlite3.connect(config.DB_NAME)
-    c = conn.cursor()
-    c.execute('''
-        UPDATE portfolio_state 
-        SET total_portfolio_value = ?
-        WHERE id = (SELECT MAX(id) FROM portfolio_state)
-    ''', (new_total_value,))
-    conn.commit()
-    conn.close()
+    db_manager.update_portfolio_value(new_total_value)
 
 def create_portfolio_performance_plot(save_path='plots'):
-    """Create portfolio performance visualization using actual DB state."""
+    """Create portfolio performance visualization using database manager."""
     os.makedirs(save_path, exist_ok=True)
-    conn = sqlite3.connect(config.DB_NAME)
-
-    # Get all transaction dates
-    transactions_df = pd.read_sql_query(
-        'SELECT transaction_date FROM portfolio_transactions ORDER BY transaction_date ASC', conn)
+    
+    # MODIFIED: Use database manager for transactions
+    transactions_df = db_manager.get_portfolio_transactions()
     if transactions_df.empty:
         print("No transactions found for portfolio visualization.")
         return
@@ -421,23 +327,10 @@ def create_portfolio_performance_plot(save_path='plots'):
         date_str = date.strftime('%Y-%m-%d')
 
         # Get latest cash balance as of this date
-        cash_query = '''
-            SELECT cash_balance FROM portfolio_state
-            WHERE last_transaction_date <= ?
-            ORDER BY last_transaction_date DESC LIMIT 1
-        '''
-        cur = conn.execute(cash_query, (date_str,))
-        row = cur.fetchone()
-        cash = row[0] if row else 10000.0  # fallback to initial cash
+        cash = db_manager.get_cash_query(date_str)
 
+        holdings = db_manager.get_holdings_query()
         # Get current holdings as of this date
-        holdings_query = '''
-            SELECT ph.symbol, ph.quantity
-            FROM portfolio_holdings ph
-            JOIN stocks s ON ph.stock_id = s.id
-            WHERE ph.quantity > 0
-        '''
-        holdings = pd.read_sql_query(holdings_query, conn)
         holdings_value = 0.0
         if not holdings.empty:
             symbols = holdings['symbol'].tolist()
@@ -470,8 +363,6 @@ def create_portfolio_performance_plot(save_path='plots'):
         print(cash_values)
         holdings_values.append(holdings_value)
         portfolio_values.append(cash + holdings_value)
-
-    conn.close()
 
     # ...plotting code unchanged...
     fig = make_subplots(
