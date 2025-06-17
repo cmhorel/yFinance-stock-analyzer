@@ -93,6 +93,26 @@ def get_current_stock_prices(symbols):
         print(f"Error fetching current prices: {e}")
         return {}
 
+def calculate_current_portfolio_value_with_cash(cash_balance):
+    """Calculate portfolio value with given cash balance."""
+    _, holdings = get_portfolio_state()
+    
+    if not holdings:
+        return cash_balance
+    
+    # Get current prices for all held stocks
+    symbols = [holding[1] for holding in holdings]
+    current_prices = get_current_stock_prices(symbols)
+    
+    holdings_value = 0.0
+    for holding in holdings:
+        symbol = holding[1]
+        quantity = holding[2]
+        if symbol in current_prices:
+            holdings_value += quantity * current_prices[symbol]
+    
+    return cash_balance + holdings_value
+
 def calculate_current_portfolio_value():
     """Calculate current total portfolio value including cash and holdings."""
     portfolio, holdings = get_portfolio_state()
@@ -178,14 +198,34 @@ def execute_buy_transaction(stock_id, symbol, quantity, price_per_share):
     )
     
     # Update or insert holding
-    db_manager.update_or_create_holding(stock_id, symbol, quantity, price_per_share, total_cost)
+    db_manager.update_or_create_holding(stock_id, symbol, quantity, price_per_share, total_cost - brokerage_fee)
     
-    # Update portfolio cash balance
+    # Get current portfolio state and create new entry
     portfolio, _ = get_portfolio_state()
     current_cash = portfolio[1]
     new_cash = current_cash - total_cost
+    transaction_date = datetime.now().strftime('%Y-%m-%d')
     
-    db_manager.update_portfolio_cash(new_cash, datetime.now().strftime('%Y-%m-%d'))
+    conn = sqlite3.connect(config.DB_NAME)
+    c = conn.cursor()
+    # Check if an entry exists for today
+    c.execute('SELECT id FROM portfolio_state WHERE last_transaction_date = ?', (transaction_date,))
+    row = c.fetchone()
+    if row:
+        # Update existing entry for today
+        c.execute('''
+            UPDATE portfolio_state
+            SET cash_balance = ?, total_portfolio_value = ?, created_date = ?
+            WHERE id = ?
+        ''', (new_cash, calculate_current_portfolio_value_with_cash(new_cash), transaction_date, row[0]))
+    else:
+        # Insert new entry for today
+        c.execute('''
+            INSERT INTO portfolio_state (cash_balance, total_portfolio_value, last_transaction_date, created_date)
+            VALUES (?, ?, ?, ?)
+        ''', (new_cash, calculate_current_portfolio_value_with_cash(new_cash), transaction_date, transaction_date))
+    conn.commit()
+    conn.close()
     
     print(f"BUY: {quantity} shares of {symbol} @ ${price_per_share:.2f} (Total: ${total_cost:.2f})")
 
@@ -203,12 +243,32 @@ def execute_sell_transaction(stock_id, symbol, quantity, price_per_share):
     # Update holding
     db_manager.reduce_or_remove_holding(stock_id, quantity)
     
-    # Update portfolio cash balance
+    # Get current portfolio state and create new entry
     portfolio, _ = get_portfolio_state()
     current_cash = portfolio[1]
     new_cash = current_cash + total_proceeds
+    transaction_date = datetime.now().strftime('%Y-%m-%d')
     
-    db_manager.update_portfolio_cash(new_cash, datetime.now().strftime('%Y-%m-%d'))
+    conn = sqlite3.connect(config.DB_NAME)
+    c = conn.cursor()
+    # Check if an entry exists for today
+    c.execute('SELECT id FROM portfolio_state WHERE last_transaction_date = ?', (transaction_date,))
+    row = c.fetchone()
+    if row:
+        # Update existing entry for today
+        c.execute('''
+            UPDATE portfolio_state
+            SET cash_balance = ?, total_portfolio_value = ?, created_date = ?
+            WHERE id = ?
+        ''', (new_cash, calculate_current_portfolio_value_with_cash(new_cash), transaction_date, row[0]))
+    else:
+        # Insert new entry for today
+        c.execute('''
+            INSERT INTO portfolio_state (cash_balance, total_portfolio_value, last_transaction_date, created_date)
+            VALUES (?, ?, ?, ?)
+        ''', (new_cash, calculate_current_portfolio_value_with_cash(new_cash), transaction_date, transaction_date))
+    conn.commit()
+    conn.close()
     
     print(f"SELL: {quantity} shares of {symbol} @ ${price_per_share:.2f} (Proceeds: ${total_proceeds:.2f})")
 
@@ -238,6 +298,17 @@ def execute_portfolio_transactions():
     portfolio, holdings = get_portfolio_state()
     cash_balance = portfolio[1]
     
+    # Create a map of currently held stocks for easy lookup
+    held_stocks = {}
+    for holding in holdings:
+        symbol = holding[1]  # symbol is at index 1
+        held_stocks[symbol] = {
+            'stock_id': holding[0],
+            'quantity': holding[2],
+            'avg_cost': holding[3],
+            'total_cost': holding[4]
+        }
+    
     # MODIFIED: Use database manager for stock data
     df = db_manager.get_stock_data()
     
@@ -255,24 +326,25 @@ def execute_portfolio_transactions():
         if result is None:
             continue
         
+        # Only consider selling stocks we actually hold
+        if result['sell_score'] >= 5 and ticker in held_stocks:
+            sell_candidates.append((ticker, result['sell_score'], result['avg_sentiment'], result['industry'], result['sector']))
+        
+        # Consider buying stocks (including adding to existing positions)
         if result['buy_score'] >= 5:
             buy_candidates.append((ticker, result['buy_score'], result['avg_sentiment'], result['industry'], result['sector']))
-        if result['sell_score'] >= 5:
-            sell_candidates.append((ticker, result['sell_score'], result['avg_sentiment'], result['industry'], result['sector']))
     
     # Sort by score
     buy_candidates.sort(key=lambda x: x[1], reverse=True)
     sell_candidates.sort(key=lambda x: x[1], reverse=True)
     
     # Execute sell transactions first
-    held_symbols = {holding[5]: holding for holding in holdings}  # symbol -> holding data
-    
     for sell_candidate in sell_candidates[:5]:  # Limit to top 5 sell candidates
         symbol = sell_candidate[0]
-        if symbol in held_symbols:
-            holding = held_symbols[symbol]
-            stock_id = holding[0]
-            quantity = holding[2]
+        if symbol in held_stocks:
+            holding_info = held_stocks[symbol]
+            stock_id = holding_info['stock_id']
+            quantity = holding_info['quantity']
             
             # Get current price
             current_prices = get_current_stock_prices([symbol])
@@ -280,87 +352,109 @@ def execute_portfolio_transactions():
                 current_price = current_prices[symbol]
                 execute_sell_transaction(stock_id, symbol, quantity, current_price)
                 cash_balance += (quantity * current_price) - 10  # Update available cash
+                # Remove from held_stocks since we sold everything
+                del held_stocks[symbol]
     
     # Execute buy transactions
     affordable_buys = get_affordable_recommendations(buy_candidates[:10], cash_balance)
     
-    # MODIFIED: Use database manager for stock IDs
     for buy_candidate in affordable_buys[:5]:
         symbol = buy_candidate[0]
         current_price = buy_candidate[-1]
         
-        # Calculate how many shares we can afford
+        # Calculate position sizing
         max_affordable = int((cash_balance - 10) / current_price)
         
         if max_affordable > 0:
+            # Limit position size to $1000 or 10% of portfolio, whichever is smaller
             max_position_value = min(1000, cash_balance * 0.1)
             target_quantity = min(max_affordable, int(max_position_value / current_price))
             
+            # If we already hold this stock, consider current position size
+            if symbol in held_stocks:
+                current_position_value = held_stocks[symbol]['quantity'] * current_price
+                remaining_budget = max_position_value - current_position_value
+                if remaining_budget > 0:
+                    target_quantity = min(target_quantity, int(remaining_budget / current_price))
+            
             if target_quantity > 0:
-                # MODIFIED: Use database manager to get stock ID
                 stock_id = db_manager.get_or_create_stock_id(symbol)
                 execute_buy_transaction(stock_id, symbol, target_quantity, current_price)
                 cash_balance -= (target_quantity * current_price) + 10
-    
-    # Update total portfolio value
-    new_total_value = calculate_current_portfolio_value()
-    db_manager.update_portfolio_value(new_total_value)
+
+def reconstruct_holdings_and_value(target_date, transactions_df):
+    """Reconstruct holdings and their value as of target_date."""
+    if isinstance(target_date, str):
+        target_date = pd.to_datetime(target_date)
+    date_str = target_date.strftime('%Y-%m-%d')
+    # Get all transactions up to and including this date
+    day_transactions = transactions_df[transactions_df['transaction_date'] <= date_str]
+    holdings = {}
+    for _, tx in day_transactions.iterrows():
+        symbol = tx['symbol']
+        qty = tx['quantity'] if tx['transaction_type'] == 'BUY' else -tx['quantity']
+        holdings[symbol] = holdings.get(symbol, 0) + qty
+        if holdings[symbol] == 0:
+            del holdings[symbol]
+    # Now, for each holding, get the closing price for this date
+    holdings_value = 0.0
+    if holdings:
+        try:
+            prices = yf.download(
+                list(holdings.keys()),
+                start=date_str,
+                end=(target_date + timedelta(days=1)).strftime('%Y-%m-%d'),
+                progress=False
+            )
+            for symbol, qty in holdings.items():
+                price = 0
+                if len(holdings) == 1:
+                    if not prices.empty and 'Close' in prices.columns:
+                        price_series = prices['Close'].dropna()
+                        if not price_series.empty:
+                            price = price_series.iloc[-1]
+                else:
+                    if 'Close' in prices and symbol in prices['Close']:
+                        price_series = prices['Close'][symbol].dropna()
+                        if not price_series.empty:
+                            price = price_series.iloc[-1]
+                holdings_value += qty * price
+        except Exception as e:
+            print(f"Price fetch failed for {list(holdings.keys())} on {date_str}: {e}")
+    return holdings, holdings_value
 
 def create_portfolio_performance_plot(save_path='plots'):
     """Create portfolio performance visualization using database manager."""
     os.makedirs(save_path, exist_ok=True)
+    transactions_df = db_manager.get_transactions_df()
+    # Get all portfolio states ordered by date
+    conn = sqlite3.connect(config.DB_NAME)
+    portfolio_states_df = pd.read_sql_query('''
+        SELECT * FROM portfolio_state 
+        ORDER BY created_date ASC
+    ''', conn)
+    conn.close()
     
-    # MODIFIED: Use database manager for transactions
-    transactions_df = db_manager.get_portfolio_transactions()
-    if transactions_df.empty:
-        print("No transactions found for portfolio visualization.")
+    if portfolio_states_df.empty:
+        print("No portfolio states found for visualization.")
         return
 
-    # Create date range from first transaction to today
-    start_date = pd.to_datetime(transactions_df['transaction_date'].min())
-    end_date = pd.Timestamp.now()
-    date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+    # Convert dates and get unique dates
+    portfolio_states_df['created_date'] = pd.to_datetime(portfolio_states_df['created_date'])
+    date_range = portfolio_states_df['created_date'].tolist()
 
-    portfolio_values, cash_values, holdings_values = [], [], []
+    portfolio_values = []
+    cash_values = []
+    holdings_values = []
 
     for date in date_range:
         date_str = date.strftime('%Y-%m-%d')
-
-        # Get latest cash balance as of this date
-        cash = db_manager.get_cash_query(date_str)
-
-        holdings = db_manager.get_holdings_query()
-        # Get current holdings as of this date
-        holdings_value = 0.0
-        if not holdings.empty:
-            symbols = holdings['symbol'].tolist()
-            try:
-                # Fetch a window of 5 days up to the current date
-                prices = yf.download(
-                    symbols, 
-                    start=(date - timedelta(days=5)).strftime('%Y-%m-%d'), 
-                    end=(date + timedelta(days=1)).strftime('%Y-%m-%d'), 
-                    progress=False
-                )
-                for idx, row in holdings.iterrows():
-                    symbol = row['symbol']
-                    qty = row['quantity']
-                    price = 0
-                    # Try to get the last available close price
-                    if len(symbols) == 1:
-                        if not prices.empty and 'Close' in prices.columns:
-                            price = prices['Close'].dropna().iloc[-1]
-                    else:
-                        if 'Close' in prices and symbol in prices['Close']:
-                            price_series = prices['Close'][symbol].dropna()
-                            if not price_series.empty:
-                                price = price_series.iloc[-1]
-                    holdings_value += qty * price
-            except Exception as e:
-                print(f"Price fetch failed for {symbols} on {date_str}: {e}")
-                holdings_value = holdings_values[-1] if holdings_values else 0.0
+        # Get portfolio state for this specific date
+        state_row = portfolio_states_df[portfolio_states_df['created_date'] == date].iloc[0]
+        cash = state_row['cash_balance']
+        # Calculate holdings value for this date
+        holdings, holdings_value = reconstruct_holdings_and_value(date, transactions_df)
         cash_values.append(cash)
-        print(cash_values)
         holdings_values.append(holdings_value)
         portfolio_values.append(cash + holdings_value)
 

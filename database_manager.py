@@ -224,6 +224,12 @@ class DatabaseManager:
             ''', (new_cash, transaction_date))
             conn.commit()
     
+    def get_transactions_df(self) -> pd.DataFrame:
+        """Return all portfolio transactions as a DataFrame, ordered by date."""
+        with self.get_connection() as conn:
+            return pd.read_sql_query(
+                'SELECT * FROM portfolio_transactions ORDER BY transaction_date ASC', conn)
+
     def update_portfolio_value(self, new_value: float) -> None:
         """Update total portfolio value."""
         with self.get_connection() as conn:
@@ -246,8 +252,7 @@ class DatabaseManager:
             ''', (stock_id, symbol, transaction_type, quantity, price_per_share, total_amount, brokerage_fee, transaction_date))
             conn.commit()
     
-    def update_or_create_holding(self, stock_id: int, symbol: str, quantity: int, 
-                                avg_cost: float, total_cost: float) -> None:
+    def update_or_create_holding(self, stock_id: int, symbol: str, quantity: int, price_per_share: float, new_cost: float) -> None:
         """Update existing holding or create new one."""
         with self.get_connection() as conn:
             cursor = conn.execute('SELECT * FROM portfolio_holdings WHERE stock_id = ?', (stock_id,))
@@ -258,8 +263,8 @@ class DatabaseManager:
                 old_quantity = existing_holding[2]
                 old_total_cost = existing_holding[4]
                 new_quantity = old_quantity + quantity
-                new_total_cost = old_total_cost + total_cost
-                new_avg_cost = new_total_cost / new_quantity
+                new_total_cost = old_total_cost + new_cost
+                new_avg_cost = new_total_cost / new_quantity if new_quantity > 0 else 0.0
                 
                 conn.execute('''
                     UPDATE portfolio_holdings 
@@ -268,10 +273,11 @@ class DatabaseManager:
                 ''', (new_quantity, new_avg_cost, new_total_cost, stock_id))
             else:
                 # Insert new holding
+                avg_cost = new_cost / quantity if quantity > 0 else 0.0
                 conn.execute('''
                     INSERT INTO portfolio_holdings (stock_id, symbol, quantity, avg_cost_per_share, total_cost)
                     VALUES (?, ?, ?, ?, ?)
-                ''', (stock_id, symbol, quantity, avg_cost, total_cost))
+                ''', (stock_id, symbol, quantity, avg_cost, new_cost))
             
             conn.commit()
     
