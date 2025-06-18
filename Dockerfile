@@ -1,15 +1,14 @@
 FROM python:3.13-slim
 
-COPY . /app
 WORKDIR /
-
 RUN mkdir /plots
 
-
 COPY requirements.txt /app/requirements.txt
-RUN pip install -r /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY app /app
 
 EXPOSE 5000
-CMD ["python", "app.py"]
+CMD ["python", "app/main.py"]
 
 

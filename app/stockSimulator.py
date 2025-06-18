@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import yfinance as yf
-import app.stockAnalyzer  
+import app.stockAnalyzer as stockAnalyzer
 import app.appconfig as appconfig
 import os
 from app.database_manager import db_manager  # NEW: Import centralized database manager
