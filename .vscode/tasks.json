@@ -7,7 +7,7 @@
             "command": "wsl",
             "args": [
                 "bash", "-c",
-                "cd \"${workspaceFolder}\" && docker build -t yfinance-analyzer . && docker run --rm -it -v data:/data -p 5000:5000 yfinance-analyzer"
+                "cd \"${workspaceFolder}\" && docker build -t yfinance-analyzer . && docker run --rm -it -v \"$(pwd)/data\":/data -p 5000:5000 yfinance-analyzer"
             ],
             "problemMatcher": []
         }

@@ -6,6 +6,9 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 import yfinance as yf
+import curl_cffi.requests as requests
+
+yt_session = requests.Session(impersonate="chrome")
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +50,7 @@ class DataFetcher:
         """
         try:
             cutoff_date = datetime.now() - timedelta(days=days_back)
-            news = yf.Ticker(ticker).news
+            news = yf.Ticker(ticker, session=yt_session).news
             
             recent_news = []
             for item in news:

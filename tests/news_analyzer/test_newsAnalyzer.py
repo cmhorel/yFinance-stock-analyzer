@@ -68,8 +68,8 @@ def test_get_industry_average_momentum_calls_analyzer(monkeypatch):
 def test_process_stock_news_calls_processor(monkeypatch):
     called = {}
     class DummyProcessor:
-        def process_news_for_stock(self, ticker, stock_id, days_back):
-            called['args'] = (ticker, stock_id, days_back)
+        def process_news_for_stock(self, ticker, stock_id, days_back, analyze_sentiment=True):
+            called['args'] = (ticker, stock_id, days_back, analyze_sentiment)
     monkeypatch.setattr(news_analyzer, "get_news_processor", lambda: DummyProcessor())
     news_analyzer.process_stock_news("AAPL", 1, 5)
-    assert called['args'] == ("AAPL", 1, 5)
+    assert called['args'] == ("AAPL", 1, 5, True)

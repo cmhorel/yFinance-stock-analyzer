@@ -354,7 +354,7 @@ def main():
     create_sector_overview_plot(buy_candidates, sell_candidates)
 
     # Plot individual stock analyses
-    for ticker in buy_tickers + sell_tickers:
+    for ticker, group in grouped:
         df_ticker = grouped.get_group(ticker)
         plot_stock_analysis(df_ticker, ticker)
 

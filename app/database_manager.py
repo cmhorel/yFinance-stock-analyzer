@@ -135,7 +135,7 @@ class DatabaseManager:
     
     # News and Sentiment Operations
     def store_news_sentiments(self, stock_id: int, news_sentiments: List[Dict[str, Any]]) -> None:
-        """Store news sentiment data."""
+        """Store news sentiment data, avoiding duplicates by stock_id, date, and title."""
         with self.get_connection() as conn:
             for sentiment in news_sentiments:
                 try:
@@ -145,9 +145,20 @@ class DatabaseManager:
                         pub_date = pub_date.strftime('%Y-%m-%d')
                     elif pub_date == 'N/A':
                         pub_date = datetime.now().strftime('%Y-%m-%d')
-                    
+
+                    # Check for duplicate (stock_id, date, title)
+                    cur = conn.execute(
+                        '''
+                        SELECT 1 FROM stock_news
+                        WHERE stock_id = ? AND date = ? AND title = ?
+                        ''',
+                        (stock_id, pub_date, sentiment['title'][:500])
+                    )
+                    if cur.fetchone():
+                        continue  # Skip duplicate
+
                     conn.execute('''
-                        INSERT OR IGNORE INTO stock_news 
+                        INSERT INTO stock_news 
                         (stock_id, date, title, summary, sentiment_score)
                         VALUES (?, ?, ?, ?, ?)
                     ''', (
@@ -159,8 +170,7 @@ class DatabaseManager:
                     ))
                 except Exception as e:
                     logger.error(f"Error storing news sentiment: {e}")
-            
-            conn.commit()
+        conn.commit()
     
     def get_average_sentiment(self, stock_id: int, days_back: int = 7) -> float:
         """Get average sentiment for a stock over specified days."""
@@ -216,7 +226,7 @@ class DatabaseManager:
     def get_portfolio_state(self) -> Tuple[Optional[Tuple], List[Tuple]]:
         """Get current portfolio state and holdings."""
         with self.get_connection() as conn:
-            cursor = conn.execute('SELECT * FROM portfolio_state ORDER BY id DESC LIMIT 1')
+            cursor = conn.execute('SELECT * FROM portfolio_state ORDER BY created_date DESC, id DESC LIMIT 1')
             portfolio = cursor.fetchone()
             cursor = conn.execute('''
                 SELECT ph.*, s.symbol 
@@ -326,6 +336,21 @@ class DatabaseManager:
         with self.get_connection() as conn:
             return pd.read_sql_query(
                 'SELECT * FROM portfolio_transactions ORDER BY transaction_date ASC', conn)
+
+    def get_news_without_sentiment(self):
+        with self.get_connection() as conn:
+            cur = conn.execute(
+                "SELECT id, title, summary FROM stock_news WHERE sentiment_score IS NULL"
+            )
+            return [{"id": row[0], "title": row[1], "summary": row[2]} for row in cur.fetchall()]
+    
+    def update_news_sentiment(self, news_id, score):
+        with self.get_connection() as conn:
+            conn.execute(
+                "UPDATE stock_news SET sentiment_score = ? WHERE id = ?",
+                (score, news_id)
+            )
+            conn.commit()
 
 # Create global instance
 db_manager = DatabaseManager()

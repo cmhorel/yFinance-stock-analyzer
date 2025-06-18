@@ -66,7 +66,7 @@ def get_industry_average_momentum(industry: str, exclude_stock_id: int, df_all):
     return analyzer.get_industry_average_momentum(industry, exclude_stock_id, df_all)
 
 # New simplified API
-def process_stock_news(ticker: str, stock_id: int, days_back: int = 7):
+def process_stock_news(ticker: str, stock_id: int, days_back: int = 7, analyze_sentiment: bool = True):
     """Process all news and sentiment for a stock."""
     processor = get_news_processor()
-    processor.process_news_for_stock(ticker, stock_id, days_back)
+    processor.process_news_for_stock(ticker, stock_id, days_back, analyze_sentiment=analyze_sentiment)

@@ -1,7 +1,5 @@
 # stockScraper.py
-import sqlite3
-import yfinance as yf
-import pandas as pd
+import sqlite3, time, yfinance as yf, pandas as pd
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
@@ -9,6 +7,12 @@ import matplotlib.pyplot as plt
 import app.appconfig as appconfig
 import app.news_analyzer as news_analyzer  # NEW: Import news analyzer module
 from app.database_manager import DatabaseManager  # NEW: Import centralized database manager
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from app.news_analyzer.sentiment_analyzer import SentimentAnalyzer
+import curl_cffi.requests as requests
+from yfinance.exceptions import YFRateLimitError
+
+yt_session = requests.Session(impersonate="chrome")
 
 db_manager = DatabaseManager()  # NEW: Create a global instance of the database manager
 
@@ -65,7 +69,7 @@ def initialize_db():
             title TEXT,
             summary TEXT,
             sentiment_score REAL,
-            UNIQUE (stock_id, date, title), 
+            UNIQUE (stock_id, date, title, summary), 
             FOREIGN KEY (stock_id) REFERENCES stocks(id)
         )
     ''')
@@ -74,6 +78,18 @@ def initialize_db():
     conn.close()
 
 
+
+def yf_download_with_retry(*args, max_retries=5, **kwargs):
+    for attempt in range(max_retries):
+        try:
+            data = yf.download(*args, **kwargs, session=yt_session)
+            return data
+        except YFRateLimitError as e:
+            print("YFinance rate limit error, backing off and retrying...")
+            time.sleep(0.05)  # 50ms
+            continue
+
+    raise RuntimeError("Max retries exceeded for yfinance download")
 
 def get_latest_date(symbol):
     """Get latest date using database manager."""
@@ -111,7 +127,8 @@ def sync_batch(tickers):
     start = min(starts.values())
 
     try:
-        hist = yf.download(tickers, start=start, group_by='ticker', threads=True, progress=False)
+        #hist = yf.download(tickers, start=start, group_by='ticker', threads=True, progress=False)
+        hist = yf_download_with_retry(tickers, start=start, group_by='ticker', threads=True, progress=False)
         for s in tickers:
             if s not in hist.columns.get_level_values(0):
                 continue
@@ -153,30 +170,34 @@ def plot_all(tickers):
     plt.tight_layout()
     plt.show()
 
-def sync_ticker(ticker):
+def sync_ticker(ticker, analyze_sentiment=True):
     try:
-        # MODIFIED: Use database manager for stock operations
         stock_id = db_manager.get_or_create_stock_id(ticker)
-
         ld = get_latest_date(ticker)
-        start_date = (datetime.strptime(ld, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d') if ld else '2020-01-01'
-        start_date = min(start_date, datetime.now().strftime('%Y-%m-%d'))
+        today_str = datetime.now().strftime('%Y-%m-%d')
 
-        hist = yf.download(ticker, start=start_date, progress=False)
+        # If the latest date is today, skip scraping
+        if ld == today_str:
+            print(f"{ticker}: Already up to date (latest date: {ld})")
+            return
+
+        # Otherwise, fetch from the next day after the latest date, or from 2020-01-01
+        start_date = (datetime.strptime(ld, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d') if ld else '2020-01-01'
+        # Don't fetch future dates
+        start_date = min(start_date, today_str)
+        
+        #hist = yf.download(ticker, start=start_date, end=(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'), progress=False)
+        hist = yf_download_with_retry(ticker, start=start_date, end=(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'), progress=False)
         if hist.empty:
-            print(f"No data for {ticker}")
+            print(f"No new data for {ticker}")
         else:
-            # Prepare price data for bulk insert
             price_data = []
             for idx, row in hist.iterrows():
                 d = idx.strftime('%Y-%m-%d')
                 if d < start_date:
                     continue
-
-                # Skip rows with any NaN values in critical columns
                 if pd.isna(row[['Open', 'High', 'Low', 'Close', 'Volume']]).any():
                     continue
-
                 price_data.append({
                     'date': d,
                     'open': float(row['Open']),
@@ -185,25 +206,39 @@ def sync_ticker(ticker):
                     'close': float(row['Close']),
                     'volume': int(row['Volume'])
                 })
-            
-            # MODIFIED: Use database manager to store prices
             if price_data:
                 db_manager.store_stock_prices(stock_id, price_data)
-        
-        # NEW: Fetch and store industry/sector and news after price sync
+
         industry_data = news_analyzer.get_industry_and_sector(ticker)
         if industry_data:
             db_manager.store_stock_info(stock_id, industry_data['sector'], industry_data['industry'])
-        
-        news_analyzer.process_stock_news(ticker, stock_id)
-        
+        news_analyzer.process_stock_news(ticker, stock_id, analyze_sentiment=analyze_sentiment)
+
     except Exception as e:
         print(f"Error syncing {ticker}: {e}")
 
+def sync_all_tickers_threaded(all_tickers, max_workers=5):
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(sync_ticker, ticker, analyze_sentimentFalse): ticker for ticker in all_tickers}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Syncing tickers"):
+            ticker = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                print(f"Error syncing {ticker}: {e}")
 
 def sync_all_tickers_sequential(all_tickers):
     for ticker in tqdm(all_tickers, desc="Syncing tickers"):
         sync_ticker(ticker)
+
+def sequential_sentiment_pass():
+    analyzer = SentimentAnalyzer()
+    # Fetch all news items without sentiment_score (or with a null/placeholder value)
+    news_items = db_manager.get_news_without_sentiment()
+    for news in news_items:
+        text = f"{news['title']} {news['summary']}"
+        score = analyzer.analyze(text)
+        db_manager.update_news_sentiment(news['id'], score)
 
 if __name__ == '__main__':
     initialize_db()
@@ -211,5 +246,6 @@ if __name__ == '__main__':
     tsx    = get_tsx60_tickers()  # TSX-60 tickers parsed dynamically from Wikipedia :contentReference[oaicite:1]{index=1}
     all_tickers = nasdaq + tsx
     print(all_tickers)
-    sync_all_tickers_sequential(all_tickers)
+    sync_all_tickers_threaded(all_tickers)
+    sequential_sentiment_pass()
     plot_all(all_tickers)
