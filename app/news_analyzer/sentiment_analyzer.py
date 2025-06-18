@@ -62,7 +62,7 @@ class SentimentAnalyzer:
         Returns:
             Sentiment score between -1 (negative) and 1 (positive)
         """
-        if not text or not text.strip():
+        if not text or not str(text).strip():
             return 0.0
         
         if self.analyzer is None:

@@ -3,7 +3,7 @@
 Centralized database manager for all database operations in the stock analysis application.
 """
 import sqlite3
-import logging
+import logging, os
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
@@ -15,11 +15,25 @@ class DatabaseManager:
     """Centralized database manager for all application database operations."""
     
     def __init__(self, db_path: str = None):
-        self.db_path = db_path or appconfig.DB_NAME
+        if db_path:
+            if "file::memory" in db_path:
+                self.inMemory = True
+            self.db_path = db_path
+        else:
+            self.inMemory = False
+            self.db_path = appconfig.DB_NAME
+        
     
     def get_connection(self) -> sqlite3.Connection:
         """Get database connection."""
-        return sqlite3.connect(self.db_path)
+        if self.inMemory:
+            return sqlite3.connect(self.db_path, uri=True)
+        else:
+            # Ensure the database file exists
+            if not self.db_path.startswith('file::memory:'):
+                if not os.path.exists(self.db_path):
+                    raise FileNotFoundError(f"Database file {self.db_path} does not exist.")
+            return sqlite3.connect(self.db_path)
     
     def get_cash_query(self, date_str) -> str:
         with self.get_connection() as conn:

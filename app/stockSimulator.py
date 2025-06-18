@@ -80,7 +80,7 @@ def get_current_stock_prices(symbols):
         return {}
     
     try:
-        tickers = yf.download(symbols, period='1d', progress=False)
+        tickers = yf.download(symbols, period='1d', progress=False, auto_adjust=False)
         if len(symbols) == 1:
             return {symbols[0]: tickers['Close'][symbol].iloc[-1]}
         else:

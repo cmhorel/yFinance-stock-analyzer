@@ -15,7 +15,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "cwd": "${workspaceFolder}"
-        }
+        },
         {
             "name": "Python De,bugger: Current File with Arguments",
             "type": "debugpy",

@@ -92,3 +92,4 @@ class NewsProcessor:
     def get_sentiment_timeseries(self, stock_id: int, days_back: int = 60):
         """Get sentiment time series for a stock."""
         return self.db.get_sentiment_timeseries(stock_id, days_back)
+
