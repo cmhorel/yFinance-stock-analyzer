@@ -6,10 +6,10 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
-import news_analyzer
-import config
+from app import appconfig, news_analyzer
+import app.appconfig as appconfig
 import os
-from database_manager import db_manager  # NEW: Import centralized database manager
+from app.database_manager import db_manager  # NEW: Import centralized database manager
 
 # Define sector color mapping
 SECTOR_COLORS = {
@@ -31,7 +31,7 @@ def get_sector_color(sector):
     """Get color for a given sector."""
     return SECTOR_COLORS.get(sector, SECTOR_COLORS['Unknown'])
 
-def plot_stock_analysis(df_ticker, ticker, save_path='plots'):
+def plot_stock_analysis(df_ticker, ticker, save_path=appconfig.PLOTS_PATH):
     """Create interactive Plotly chart with sector-based coloring."""
     os.makedirs(save_path, exist_ok=True)
 
@@ -223,7 +223,6 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
         'avg_sentiment': avg_sentiment,
         
     }
-    print(metrics)
     metrics['relative_momentum'] = metrics.get('momentum', 0) - industry_avg_momentum  # NEW: Relative to industry
 
     # Buy if price above MAs, RSI low, momentum and volume increasing
@@ -256,7 +255,7 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
         'sector': sector
     }
 
-def create_sector_overview_plot(buy_candidates, sell_candidates, save_path='plots'):
+def create_sector_overview_plot(buy_candidates, sell_candidates, save_path=appconfig.PLOTS_PATH):
     """Create an interactive sector overview plot."""
     os.makedirs(save_path, exist_ok=True)
     

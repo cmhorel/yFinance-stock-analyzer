@@ -6,14 +6,16 @@ from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-import config
-import news_analyzer
-from database_manager import db_manager  # NEW: Import centralized database manager
+import app.appconfig as appconfig
+import app.news_analyzer as news_analyzer  # NEW: Import news analyzer module
+from app.database_manager import DatabaseManager  # NEW: Import centralized database manager
+
+db_manager = DatabaseManager()  # NEW: Create a global instance of the database manager
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
-DB_NAME = config.DB_NAME
+DB_NAME = appconfig.DB_NAME
 THREADS = 10
 BATCH_SIZE = 5
 

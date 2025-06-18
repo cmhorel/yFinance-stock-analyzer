@@ -7,15 +7,15 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
 import yfinance as yf
-import stockAnalyzer
-import config
+import app.stockAnalyzer  
+import app.appconfig as appconfig
 import os
-from database_manager import db_manager  # NEW: Import centralized database manager
+from app.database_manager import db_manager  # NEW: Import centralized database manager
 
 
 def initialize_portfolio_db():
     """Initialize the portfolio simulation database tables."""
-    conn = sqlite3.connect(config.DB_NAME)
+    conn = sqlite3.connect(appconfig.DB_NAME)
     c = conn.cursor()
     
     # Create portfolio_state table to track overall portfolio
@@ -82,7 +82,7 @@ def get_current_stock_prices(symbols):
     try:
         tickers = yf.download(symbols, period='1d', progress=False)
         if len(symbols) == 1:
-            return {symbols[0]: tickers['Close'].iloc[-1]}
+            return {symbols[0]: tickers['Close'][symbol].iloc[-1]}
         else:
             prices = {}
             for symbol in symbols:
@@ -167,6 +167,7 @@ def get_portfolio_report():
         report += f"\n=== CURRENT HOLDINGS ===\n"
         symbols = [holding[1] for holding in holdings]
         current_prices = get_current_stock_prices(symbols)
+        print(current_prices)
         
         for holding in holdings:
             symbol = holding[1]
@@ -179,7 +180,7 @@ def get_portfolio_report():
                 current_value = quantity * current_price
                 gain_loss = current_value - total_cost
                 gain_loss_pct = (gain_loss / total_cost) * 100 if total_cost > 0 else 0
-                
+                print(current_price)
                 report += f"{symbol}: {quantity} shares @ ${avg_cost:.2f} avg cost\n"
                 report += f"  Current: ${current_price:.2f}/share, Total: ${current_value:,.2f}\n"
                 report += f"  Gain/Loss: ${gain_loss:+,.2f} ({gain_loss_pct:+.2f}%)\n"
@@ -206,7 +207,7 @@ def execute_buy_transaction(stock_id, symbol, quantity, price_per_share):
     new_cash = current_cash - total_cost
     transaction_date = datetime.now().strftime('%Y-%m-%d')
     
-    conn = sqlite3.connect(config.DB_NAME)
+    conn = sqlite3.connect(appconfig.DB_NAME)
     c = conn.cursor()
     # Check if an entry exists for today
     c.execute('SELECT id FROM portfolio_state WHERE last_transaction_date = ?', (transaction_date,))
@@ -249,7 +250,7 @@ def execute_sell_transaction(stock_id, symbol, quantity, price_per_share):
     new_cash = current_cash + total_proceeds
     transaction_date = datetime.now().strftime('%Y-%m-%d')
     
-    conn = sqlite3.connect(config.DB_NAME)
+    conn = sqlite3.connect(appconfig.DB_NAME)
     c = conn.cursor()
     # Check if an entry exists for today
     c.execute('SELECT id FROM portfolio_state WHERE last_transaction_date = ?', (transaction_date,))
@@ -423,12 +424,12 @@ def reconstruct_holdings_and_value(target_date, transactions_df):
             print(f"Price fetch failed for {list(holdings.keys())} on {date_str}: {e}")
     return holdings, holdings_value
 
-def create_portfolio_performance_plot(save_path='plots'):
+def create_portfolio_performance_plot(save_path=appconfig.PLOTS_PATH):
     """Create portfolio performance visualization using database manager."""
     os.makedirs(save_path, exist_ok=True)
     transactions_df = db_manager.get_transactions_df()
     # Get all portfolio states ordered by date
-    conn = sqlite3.connect(config.DB_NAME)
+    conn = sqlite3.connect(appconfig.DB_NAME)
     portfolio_states_df = pd.read_sql_query('''
         SELECT * FROM portfolio_state 
         ORDER BY created_date ASC

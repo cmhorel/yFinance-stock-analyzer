@@ -1,0 +1,28 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: pytest",
+            "type": "python",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests" // or specify a specific test file, e.g., "tests/test_stockSimulator.py"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}"
+        }
+        {
+            "name": "Python De,bugger: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "${relativeFileDirname}.${fileBasenameNoExtension}",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}" 
+        }
+    ]
+}

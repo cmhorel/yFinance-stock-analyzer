@@ -5,15 +5,14 @@ Industry-level analysis and comparisons.
 import logging
 import pandas as pd
 from typing import Optional
-from .database_manager import NewsDatabase
-
+from app.database_manager import DatabaseManager
 logger = logging.getLogger(__name__)
 
 class IndustryAnalyzer:
     """Handles industry-level analysis and comparisons."""
     
     def __init__(self):
-        self.db = NewsDatabase()
+        self.db = DatabaseManager()
     
     def get_industry_average_momentum(self, industry: str, exclude_stock_id: int, 
                                     df_all: pd.DataFrame) -> float:

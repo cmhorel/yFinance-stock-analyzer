@@ -5,7 +5,7 @@ News analysis module for stock sentiment and industry analysis.
 import logging
 from .news_processor import NewsProcessor
 from .industry_analyzer import IndustryAnalyzer
-from database_manager import db_manager  # NEW: Import centralized database manager
+from app.database_manager import db_manager  # NEW: Import centralized database manager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

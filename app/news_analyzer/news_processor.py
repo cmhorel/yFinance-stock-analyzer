@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import List, Dict, Any
 from .sentiment_analyzer import SentimentAnalyzer
 from .data_fetcher import DataFetcher
-from .database_manager import NewsDatabase
+from app.database_manager import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ class NewsProcessor:
     def __init__(self):
         self.sentiment_analyzer = SentimentAnalyzer()
         self.data_fetcher = DataFetcher()
-        self.db = NewsDatabase()
+        self.db = DatabaseManager()
     
     def process_news_for_stock(self, ticker: str, stock_id: int, days_back: int = 7) -> None:
         """
