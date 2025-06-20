@@ -30,8 +30,7 @@ def get_sector_color(sector):
     """Get color for a given sector."""
     return SECTOR_COLORS.get(sector, SECTOR_COLORS['Unknown'])
 
-def plot_stock_analysis(df_ticker, ticker, save_path=appconfig.PLOTS_PATH):
-    """Create interactive Plotly chart with sector-based coloring."""
+def plot_stock_analysis(df_ticker, ticker, save_path=os.path.join(appconfig.PLOTS_PATH, "stock_analysis")):
     os.makedirs(save_path, exist_ok=True)
 
     df_ticker = df_ticker.copy()

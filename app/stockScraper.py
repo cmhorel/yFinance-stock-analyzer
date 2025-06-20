@@ -178,19 +178,11 @@ def sync_ticker(ticker, analyze_sentiment=True):
     try:
         stock_id = db_manager.get_or_create_stock_id(ticker)
         ld = get_latest_date(ticker)
-        today_str = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
-
-        # If the latest date is today, skip scraping
-        if ld == today_str:
-            print(f"{ticker}: Already up to date (latest date: {ld})")
-            return
-
-        # Otherwise, fetch from the next day after the latest date, or from 2020-01-01
+        # Use helper to ensure we only use a fully closed trading day
+        ld = get_latest_complete_trading_date(ld)
         start_date = (datetime.strptime(ld, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d') if ld else '2020-01-01'
-        # Don't fetch future dates
-        start_date = min(start_date, today_str)
-        print(f"Syncing {ticker} from {start_date} to {today_str}. LD was {ld}")
-        #hist = yf.download(ticker, start=start_date, end=(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'), progress=False)
+
+        print(f"Syncing {ticker} from {start_date}. LD was {ld}")
         hist = yf_download_with_retry(
             ticker,
             start=start_date,
@@ -216,6 +208,7 @@ def sync_ticker(ticker, analyze_sentiment=True):
                 })
             if price_data:
                 db_manager.store_stock_prices(stock_id, price_data)
+                print(f"Stored prices for {ticker} up to {price_data[-1]['date']}")
 
         industry_data = news_analyzer.get_industry_and_sector(ticker)
         if industry_data:
@@ -225,7 +218,7 @@ def sync_ticker(ticker, analyze_sentiment=True):
     except Exception as e:
         print(f"Error syncing {ticker}: {e}")
 
-def sync_all_tickers_threaded(all_tickers, max_workers=5):
+def sync_all_tickers_threaded(all_tickers, max_workers=10):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(sync_ticker, ticker, analyze_sentiment=False): ticker for ticker in all_tickers}
         for future in tqdm(as_completed(futures), total=len(futures), desc="Syncing tickers"):
@@ -248,12 +241,21 @@ def sequential_sentiment_pass():
         score = analyzer.analyze(text)
         db_manager.update_news_sentiment(news['id'], score)
 
+def get_latest_complete_trading_date(latest_db_date, market_timezone="US/Eastern", market_close_hour=16):
+    now_market = datetime.now(pytz.timezone(market_timezone))
+    today_str = now_market.strftime('%Y-%m-%d')
+    # If latest date is today but market hasn't closed, use previous day
+    if latest_db_date == today_str and now_market.hour < market_close_hour:
+        # Go back one day (could be weekend/holiday, but yfinance will skip non-trading days)
+        prev_day = now_market - timedelta(days=1)
+        return prev_day.strftime('%Y-%m-%d')
+    return latest_db_date
+
 if __name__ == '__main__':
     initialize_db()
     nasdaq = get_nasdaq_100_tickers()
     tsx    = get_tsx60_tickers()  # TSX-60 tickers parsed dynamically from Wikipedia :contentReference[oaicite:1]{index=1}
     all_tickers = nasdaq + tsx
-    print(all_tickers)
     sync_all_tickers_threaded(all_tickers)
     sequential_sentiment_pass()
     plot_all(all_tickers)

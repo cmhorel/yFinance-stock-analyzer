@@ -63,7 +63,7 @@ def initialize_portfolio_db():
     ''')
     
     today = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
-    c.execute('SELECT COUNT(*) FROM portfolio_state WHERE created_date = ?', (today,))
+    c.execute('SELECT COUNT(*) FROM portfolio_state')
     if c.fetchone()[0] == 0:
         c.execute('''
             INSERT INTO portfolio_state (cash_balance, total_portfolio_value, last_transaction_date, created_date)
@@ -86,12 +86,14 @@ def get_current_stock_prices(symbols):
     try:
         tickers = yf.download(symbols, period='1d', progress=False, auto_adjust=False)
         if len(symbols) == 1:
-            return {symbols[0]: tickers['Close'][symbol].iloc[-1]}
+            return {symbols[0]: tickers['Close'][symbols[0]].iloc[-1]}
         else:
             prices = {}
             for symbol in symbols:
-                if symbol in tickers['Close'].columns:
-                    prices[symbol] = tickers['Close'][symbol].iloc[-1]
+                series = tickers['Close'][symbol].dropna()
+                if not series.empty:
+                    prices[symbol] = series.iloc[-1]
+                    
             return prices
     except Exception as e:
         print(f"Error fetching current prices: {e}")
@@ -144,13 +146,12 @@ def calculate_current_portfolio_value():
 def can_make_transactions():
     """Check if enough time has passed since last transaction."""
     portfolio, _ = get_portfolio_state()
-    print(portfolio)
     if not portfolio or not portfolio[3]:  # No last transaction date
         return True
     
     last_transaction = datetime.strptime(portfolio[3], '%Y-%m-%d')
-    days_since = (datetime.now(TIME_ZONE) - last_transaction).days
-    
+    days_since = (datetime.now(TIME_ZONE) - last_transaction.replace(tzinfo=TIME_ZONE)).days
+
     return days_since >= 1
 
 def get_portfolio_report():
@@ -184,7 +185,6 @@ def get_portfolio_report():
                 current_value = quantity * current_price
                 gain_loss = current_value - total_cost
                 gain_loss_pct = (gain_loss / total_cost) * 100 if total_cost > 0 else 0
-                print(current_price)
                 report += f"{symbol}: {quantity} shares @ ${avg_cost:.2f} avg cost\n"
                 report += f"  Current: ${current_price:.2f}/share, Total: ${current_value:,.2f}\n"
                 report += f"  Gain/Loss: ${gain_loss:+,.2f} ({gain_loss_pct:+.2f}%)\n"
