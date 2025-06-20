@@ -2,6 +2,11 @@ import unittest, pytest
 from datetime import datetime, timedelta
 import pandas as pd
 from app.database_manager import DatabaseManager
+import pytz
+from app import appconfig
+
+TIME_ZONE = pytz.timezone(appconfig.TIME_ZONE)
+
 
 @pytest.fixture(scope="module")
 def db():
@@ -101,7 +106,7 @@ def test_store_and_get_stock_info(db):
 
 def test_store_and_get_stock_prices(db):
     stock_id = db.get_or_create_stock_id("AAPL")
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
     price_data = [{
         'date': today, 'open': 100, 'high': 110, 'low': 90, 'close': 105, 'volume': 1000
     }]
@@ -111,7 +116,7 @@ def test_store_and_get_stock_prices(db):
 
 def test_store_news_sentiments_and_average(db):
     stock_id = db.get_or_create_stock_id("AAPL")
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
     news = [
         {'publish_date': today, 'title': 'T1', 'summary': 'S1', 'sentiment_score': 0.5},
         {'publish_date': today, 'title': 'T2', 'summary': 'S2', 'sentiment_score': 1.0},
@@ -122,8 +127,8 @@ def test_store_news_sentiments_and_average(db):
 
 def test_get_sentiment_timeseries(db):
     stock_id = db.get_or_create_stock_id("AAPL")
-    today = datetime.now().strftime('%Y-%m-%d')
-    yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+    today = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
+    yesterday = (datetime.now(TIME_ZONE) - timedelta(days=1)).strftime('%Y-%m-%d')
     news = [
         {'publish_date': yesterday, 'title': 'T1', 'summary': 'S1', 'sentiment_score': 0.5},
         {'publish_date': today, 'title': 'T2', 'summary': 'S2', 'sentiment_score': 1.0},
@@ -161,7 +166,7 @@ def test_reduce_or_remove_holding(db):
 
 def test_record_transaction_and_get_transactions_df(db):
     stock_id = db.get_or_create_stock_id("AAPL")
-    today = datetime.now().strftime('%Y-%m-%d')
+    today = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
     db.record_transaction(stock_id, "AAPL", "BUY", 10, 100.0, 1000.0, 1.0, today)
     df = db.get_transactions_df()
     assert len(df) == 1

@@ -1,12 +1,16 @@
 import pytest, datetime
 from unittest.mock import patch, MagicMock
 from app.news_analyzer.data_fetcher import DataFetcher
+from app import appconfig
+import pytz
+
+TIME_ZONE = pytz.timezone(appconfig.TIME_ZONE)
 
 def test_fetch_recent_news_returns_news_list():
     # Patch yf.Ticker to return a mock with a .news attribute
     with patch("app.news_analyzer.data_fetcher.yf.Ticker") as mock_ticker:
         mock_ticker.return_value.news = [
-            {"content": {"pubDate": datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            {"content": {"pubDate": datetime.datetime.now(TIME_ZONE).strftime('%Y-%m-%dT%H:%M:%SZ'),
                           "title": "Headline",
                             "summary": "Summary"}}
         ]

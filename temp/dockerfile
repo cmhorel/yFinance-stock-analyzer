@@ -1,5 +1,0 @@
-FROM yfinance-test
-
-COPY app /app
-
-RUN pip install lxml plotly

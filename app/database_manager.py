@@ -8,6 +8,9 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
 import app.appconfig as appconfig
+import pytz
+
+TIME_ZONE = pytz.timezone(appconfig.TIME_ZONE)  # Use timezone from appconfig
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +114,7 @@ class DatabaseManager:
     
     def get_stock_data(self, months_back: int = 6) -> pd.DataFrame:
         """Get stock data for analysis."""
-        cutoff_date = datetime.now() - timedelta(days=months_back * 30)
+        cutoff_date = datetime.now(TIME_ZONE) - timedelta(days=months_back * 30)
         cutoff_str = cutoff_date.strftime('%Y-%m-%d')
 
         query = '''
@@ -144,7 +147,7 @@ class DatabaseManager:
                     if isinstance(pub_date, datetime):
                         pub_date = pub_date.strftime('%Y-%m-%d')
                     elif pub_date == 'N/A':
-                        pub_date = datetime.now().strftime('%Y-%m-%d')
+                        pub_date = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
 
                     # Check for duplicate (stock_id, date, title)
                     cur = conn.execute(
@@ -174,7 +177,7 @@ class DatabaseManager:
     
     def get_average_sentiment(self, stock_id: int, days_back: int = 7) -> float:
         """Get average sentiment for a stock over specified days."""
-        cutoff_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
+        cutoff_date = (datetime.now(TIME_ZONE) - timedelta(days=days_back)).strftime('%Y-%m-%d')
         
         with self.get_connection() as conn:
             cursor = conn.execute(f'''
@@ -188,7 +191,7 @@ class DatabaseManager:
     
     def get_sentiment_timeseries(self, stock_id: int, days_back: int = 60) -> pd.DataFrame:
         """Get daily average sentiment scores for a stock."""
-        cutoff_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
+        cutoff_date = (datetime.now(TIME_ZONE) - timedelta(days=days_back)).strftime('%Y-%m-%d')
         
         with self.get_connection() as conn:
             query = '''

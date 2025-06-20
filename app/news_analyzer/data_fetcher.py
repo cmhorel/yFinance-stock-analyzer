@@ -3,10 +3,15 @@
 Data fetching module for stock information and news.
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 import yfinance as yf
 import curl_cffi.requests as requests
+from app import appconfig  # Importing TIME_ZONE from appconfig
+import pytz
+
+TIME_ZONE = pytz.timezone(appconfig.TIME_ZONE)
+YAHOO_TIME_ZONE = pytz.timezone("America/New_York")  # Default timezone for Yahoo Finance
 
 yt_session = requests.Session(impersonate="chrome")
 
@@ -49,7 +54,7 @@ class DataFetcher:
             List of news items
         """
         try:
-            cutoff_date = datetime.now() - timedelta(days=days_back)
+            cutoff_date = datetime.now(TIME_ZONE) - timedelta(days=days_back)
             news = yf.Ticker(ticker, session=yt_session).news
             
             recent_news = []
@@ -58,7 +63,7 @@ class DataFetcher:
                     pub_date = datetime.strptime(
                         item['content']['pubDate'], 
                         '%Y-%m-%dT%H:%M:%SZ'
-                    )
+                    ).replace(tzinfo=YAHOO_TIME_ZONE)
                     if pub_date >= cutoff_date:
                         recent_news.append(item)
                 except (KeyError, ValueError) as e:

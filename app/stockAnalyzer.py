@@ -2,7 +2,6 @@
 import sqlite3
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.express as px
@@ -39,6 +38,7 @@ def plot_stock_analysis(df_ticker, ticker, save_path=appconfig.PLOTS_PATH):
     df_ticker['MA20'] = df_ticker['close'].rolling(window=20).mean()
     df_ticker['MA50'] = df_ticker['close'].rolling(window=50).mean()
     df_ticker['RSI'] = calculate_rsi(df_ticker['close'])
+    df_ticker['Volatility'] = calculate_volatility(df_ticker['close'])  # NEW: Add volatility
 
     stock_id = df_ticker['stock_id'].iloc[0]
     sector = df_ticker['sector'].iloc[0] if 'sector' in df_ticker.columns and pd.notna(df_ticker['sector'].iloc[0]) else 'Unknown'
@@ -47,15 +47,14 @@ def plot_stock_analysis(df_ticker, ticker, save_path=appconfig.PLOTS_PATH):
     avg_sentiment = news_analyzer.get_average_sentiment(stock_id)
     sector_color = get_sector_color(sector)
 
-    # Create subplots
+    # Create subplots - Updated to include volatility
     fig = make_subplots(
-        rows=3, cols=1,
+        rows=4, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.05,
-        subplot_titles=(f'{ticker} - {sector} ({industry})', 'RSI', 'Volume'),
-        row_heights=[0.6, 0.2, 0.2]
+        vertical_spacing=0.04,
+        subplot_titles=(f'{ticker} - {sector} ({industry})', 'RSI', 'Volatility', 'Volume'),
+        row_heights=[0.5, 0.15, 0.15, 0.2]
     )
-
     # Price and Moving Averages
     fig.add_trace(
         go.Scatter(
@@ -93,7 +92,7 @@ def plot_stock_analysis(df_ticker, ticker, save_path=appconfig.PLOTS_PATH):
         row=1, col=1
     )
 
-    # RSI
+     # RSI
     fig.add_trace(
         go.Scatter(
             x=df_ticker['date'], 
@@ -110,6 +109,19 @@ def plot_stock_analysis(df_ticker, ticker, save_path=appconfig.PLOTS_PATH):
     fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=2, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=2, col=1)
 
+    # NEW: Volatility
+    fig.add_trace(
+        go.Scatter(
+            x=df_ticker['date'], 
+            y=df_ticker['Volatility'],
+            mode='lines',
+            name='Volatility',
+            line=dict(color='red', width=1),
+            hovertemplate='<b>Volatility</b><br>Date: %{x}<br>Volatility: %{y:.3f}<extra></extra>'
+        ),
+        row=3, col=1
+    )
+
     # Volume
     fig.add_trace(
         go.Bar(
@@ -119,9 +131,24 @@ def plot_stock_analysis(df_ticker, ticker, save_path=appconfig.PLOTS_PATH):
             marker_color='lightgray',
             hovertemplate='<b>Volume</b><br>Date: %{x}<br>Volume: %{y:,.0f}<extra></extra>'
         ),
-        row=3, col=1
+        row=4, col=1
     )
 
+    # ... existing code for sentiment annotation ...
+
+    # Update layout
+    fig.update_layout(
+        title=f'{ticker} Stock Analysis - {sector} Sector',
+        xaxis_title='Date',
+        height=900,  # Increased height for additional subplot
+        showlegend=True,
+        hovermode='x unified'
+    )
+
+    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
+    fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
+    fig.update_yaxes(title_text="Volatility", row=3, col=1)
+    fig.update_yaxes(title_text="Volume", row=4, col=1)
     # Add sentiment annotation
     sentiment_color = 'green' if avg_sentiment > 0 else 'red' if avg_sentiment < 0 else 'gray'
     sentiment_text = f'Avg Sentiment: {avg_sentiment:.3f}'
@@ -198,13 +225,14 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
     # RSI
     rsi = calculate_rsi(close)
 
+    # NEW: Volatility
+    volatility = calculate_volatility(close)
+
     # Momentum: difference between current close and 7 days ago
     momentum = close - close.shift(7)
 
     # Volume change: compare avg volume last 5 days to previous 5 days
     vol_change = volume.rolling(window=5).mean() - volume.rolling(window=5).mean().shift(5)
-
-
 
     # NEW: Get average news sentiment from last 7 days
     avg_sentiment = db_manager.get_average_sentiment(stock_id)
@@ -221,11 +249,11 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
         'momentum': momentum.iloc[-1],
         'vol_change': vol_change.iloc[-1],
         'avg_sentiment': avg_sentiment,
-        
+        'volatility': volatility.iloc[-1],  # NEW: Add volatility metric
     }
     metrics['relative_momentum'] = metrics.get('momentum', 0) - industry_avg_momentum  # NEW: Relative to industry
 
-    # Buy if price above MAs, RSI low, momentum and volume increasing
+    # Buy if price above MAs, RSI low, momentum and volume increasing, volatility reasonable
     buy_score = 0
     buy_score += 1 if metrics['close'] > metrics['ma20'] else 0
     buy_score += 1 if metrics['close'] > metrics['ma50'] else 0
@@ -235,8 +263,10 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
     # NEW: Sentiment and industry factors
     buy_score += 1 if metrics['avg_sentiment'] > 0.1 else 0  # Boost for positive news
     buy_score += 1 if metrics['relative_momentum'] > 0 else 0  # Boost if outperforming industry
+    # NEW: Volatility factor - prefer moderate volatility (not too high, not too low)
+    buy_score += 1 if metrics['volatility'] <= 0.3 else 0
 
-    # Sell if price below MAs, RSI high, momentum and volume decreasing
+    # Sell if price below MAs, RSI high, momentum and volume decreasing, high volatility
     sell_score = 0
     sell_score += 1 if metrics['close'] < metrics['ma20'] else 0
     sell_score += 1 if metrics['close'] < metrics['ma50'] else 0
@@ -246,14 +276,24 @@ def analyze_ticker(df_ticker, df_all):  # NEW: Pass df_all for industry comparis
     # NEW: Sentiment and industry factors
     sell_score += 1 if metrics['avg_sentiment'] < -0.1 else 0  # Boost for negative news
     sell_score += 1 if metrics['relative_momentum'] < 0 else 0  # Boost if underperforming industry
+    # NEW: High volatility increases sell score
+    sell_score += 1 if metrics['volatility'] > 0.5 else 0
 
     return {
         'buy_score': buy_score, 
         'sell_score': sell_score, 
         'avg_sentiment': avg_sentiment, 
         'industry': industry,
-        'sector': sector
+        'sector': sector,
+        'volatility': metrics['volatility']  # NEW: Include volatility in return
     }
+
+
+def calculate_volatility(series: pd.Series, period: int = 20) -> pd.Series:
+    """Calculate rolling volatility (standard deviation of returns)."""
+    returns = series.pct_change()
+    volatility = returns.rolling(window=period).std() * np.sqrt(252)  # Annualized volatility
+    return volatility.fillna(0)
 
 def create_sector_overview_plot(buy_candidates, sell_candidates, save_path=appconfig.PLOTS_PATH):
     """Create an interactive sector overview plot."""

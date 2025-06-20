@@ -11,6 +11,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.news_analyzer.sentiment_analyzer import SentimentAnalyzer
 import curl_cffi.requests as requests
 from yfinance.exceptions import YFRateLimitError
+import pytz
+
+
+TIME_ZONE  = pytz.timezone(appconfig.TIME_ZONE)  # NEW: Use timezone from appconfig
 
 yt_session = requests.Session(impersonate="chrome")
 
@@ -174,7 +178,7 @@ def sync_ticker(ticker, analyze_sentiment=True):
     try:
         stock_id = db_manager.get_or_create_stock_id(ticker)
         ld = get_latest_date(ticker)
-        today_str = datetime.now().strftime('%Y-%m-%d')
+        today_str = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
 
         # If the latest date is today, skip scraping
         if ld == today_str:
@@ -185,9 +189,13 @@ def sync_ticker(ticker, analyze_sentiment=True):
         start_date = (datetime.strptime(ld, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d') if ld else '2020-01-01'
         # Don't fetch future dates
         start_date = min(start_date, today_str)
-        
+        print(f"Syncing {ticker} from {start_date} to {today_str}. LD was {ld}")
         #hist = yf.download(ticker, start=start_date, end=(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'), progress=False)
-        hist = yf_download_with_retry(ticker, start=start_date, end=(datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d'), progress=False)
+        hist = yf_download_with_retry(
+            ticker,
+            start=start_date,
+            progress=False
+        )
         if hist.empty:
             print(f"No new data for {ticker}")
         else:
@@ -219,7 +227,7 @@ def sync_ticker(ticker, analyze_sentiment=True):
 
 def sync_all_tickers_threaded(all_tickers, max_workers=5):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(sync_ticker, ticker, analyze_sentimentFalse): ticker for ticker in all_tickers}
+        futures = {executor.submit(sync_ticker, ticker, analyze_sentiment=False): ticker for ticker in all_tickers}
         for future in tqdm(as_completed(futures), total=len(futures), desc="Syncing tickers"):
             ticker = futures[future]
             try:

@@ -1,16 +1,20 @@
 # stockSimulator.py
-import sqlite3
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import plotly.express as px
-import yfinance as yf
-import app.stockAnalyzer as stockAnalyzer
-import app.appconfig as appconfig
-import os
 from app.database_manager import db_manager  # NEW: Import centralized database manager
+from datetime import datetime, timedelta
+from plotly.subplots import make_subplots
+import app.appconfig as appconfig
+import app.stockAnalyzer as stockAnalyzer
+import numpy as np
+import os
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import pytz
+import sqlite3
+import yfinance as yf
+
+
+TIME_ZONE  = pytz.timezone(appconfig.TIME_ZONE)  # NEW: Use timezone from appconfig
 
 
 def initialize_portfolio_db():
@@ -25,7 +29,7 @@ def initialize_portfolio_db():
             cash_balance REAL,
             total_portfolio_value REAL,
             last_transaction_date TEXT,
-            created_date TEXT
+            created_date TEXT UNIQUE
         )
     ''')
     
@@ -58,13 +62,13 @@ def initialize_portfolio_db():
         )
     ''')
     
-    # Initialize portfolio with $10,000 if it doesn't exist
-    c.execute('SELECT COUNT(*) FROM portfolio_state')
+    today = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
+    c.execute('SELECT COUNT(*) FROM portfolio_state WHERE created_date = ?', (today,))
     if c.fetchone()[0] == 0:
         c.execute('''
             INSERT INTO portfolio_state (cash_balance, total_portfolio_value, last_transaction_date, created_date)
             VALUES (?, ?, ?, ?)
-        ''', (10000.0, 10000.0, None, datetime.now().strftime('%Y-%m-%d')))
+        ''', (10000.0, 10000.0, None, today))
         print("Initialized new portfolio with $10,000")
     
     conn.commit()
@@ -145,7 +149,7 @@ def can_make_transactions():
         return True
     
     last_transaction = datetime.strptime(portfolio[3], '%Y-%m-%d')
-    days_since = (datetime.now() - last_transaction).days
+    days_since = (datetime.now(TIME_ZONE) - last_transaction).days
     
     return days_since >= 1
 
@@ -195,7 +199,7 @@ def execute_buy_transaction(stock_id, symbol, quantity, price_per_share):
     # Record transaction
     db_manager.record_transaction(
         stock_id, symbol, 'BUY', quantity, price_per_share, 
-        total_cost, brokerage_fee, datetime.now().strftime('%Y-%m-%d')
+        total_cost, brokerage_fee, datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
     )
     
     # Update or insert holding
@@ -205,7 +209,7 @@ def execute_buy_transaction(stock_id, symbol, quantity, price_per_share):
     portfolio, _ = get_portfolio_state()
     current_cash = portfolio[1]
     new_cash = current_cash - total_cost
-    transaction_date = datetime.now().strftime('%Y-%m-%d')
+    transaction_date = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
     
     conn = sqlite3.connect(appconfig.DB_NAME)
     c = conn.cursor()
@@ -238,7 +242,7 @@ def execute_sell_transaction(stock_id, symbol, quantity, price_per_share):
     # Record transaction
     db_manager.record_transaction(
         stock_id, symbol, 'SELL', quantity, price_per_share, 
-        total_proceeds, brokerage_fee, datetime.now().strftime('%Y-%m-%d')
+        total_proceeds, brokerage_fee, datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
     )
     
     # Update holding
@@ -248,7 +252,7 @@ def execute_sell_transaction(stock_id, symbol, quantity, price_per_share):
     portfolio, _ = get_portfolio_state()
     current_cash = portfolio[1]
     new_cash = current_cash + total_proceeds
-    transaction_date = datetime.now().strftime('%Y-%m-%d')
+    transaction_date = datetime.now(TIME_ZONE).strftime('%Y-%m-%d')
     
     conn = sqlite3.connect(appconfig.DB_NAME)
     c = conn.cursor()

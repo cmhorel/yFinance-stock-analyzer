@@ -80,3 +80,33 @@ def test_main_no_data(capsys):
         captured = capsys.readouterr()
         assert "No data retrieved." in captured.out
         assert result is None
+
+def test_analyze_ticker_includes_volatility():
+    df = make_test_df()
+    # Add some volatility to the close prices
+    df['close'] = [100, 110, 90, 120, 80, 130, 70, 140, 60, 150] * 6
+    df_all = df.copy()
+    result = stockAnalyzer.analyze_ticker(df, df_all)
+    assert "volatility" in result
+    assert isinstance(result["volatility"], float)
+    # Optionally, check that volatility is above a threshold
+    assert result["volatility"] > 0
+    
+def test_volatility_affects_buy_score():
+    # Low volatility: prices barely change
+    df_low = make_test_df()
+    df_low['close'] = [100] * len(df_low)
+    df_all = df_low.copy()
+    result_low = stockAnalyzer.analyze_ticker(df_low, df_all)
+    
+    # High volatility: prices swing up and down
+    df_high = make_test_df()
+    df_high['close'] = [100 + ((-1) ** i) * 20 for i in range(len(df_high))]
+    df_all_high = df_high.copy()
+    result_high = stockAnalyzer.analyze_ticker(df_high, df_all_high)
+    
+    # Assert volatility is higher for the high-volatility input
+    assert result_high["volatility"] > result_low["volatility"]
+    
+    # Assert buy_score is lower for high volatility (if that's your logic)
+    assert result_high["buy_score"] < result_low["buy_score"]

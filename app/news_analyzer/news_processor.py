@@ -8,6 +8,11 @@ from typing import List, Dict, Any
 from .sentiment_analyzer import SentimentAnalyzer
 from .data_fetcher import DataFetcher
 from app.database_manager import DatabaseManager
+from app import appconfig
+import pytz
+
+TIME_ZONE = pytz.timezone(appconfig.TIME_ZONE)
+YAHOO_TIME_ZONE = pytz.timezone("America/New_York")  # Default timezone for Yahoo Finance
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +63,9 @@ class NewsProcessor:
                         pub_date = 'N/A'
                         if 'pubDate' in content:
                             try:
-                                pub_date = datetime.strptime(content['pubDate'], '%Y-%m-%dT%H:%M:%SZ')
+                                pub_date = datetime.strptime(content['pubDate'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=YAHOO_TIME_ZONE)
                             except ValueError:
-                                pub_date = datetime.now()
+                                pub_date = datetime.now(TIME_ZONE)
                         sentiments.append({
                             'title': title,
                             'summary': summary,
@@ -96,9 +101,9 @@ class NewsProcessor:
                 pub_date = 'N/A'
                 if 'pubDate' in content:
                     try:
-                        pub_date = datetime.strptime(content['pubDate'], '%Y-%m-%dT%H:%M:%SZ')
+                        pub_date = datetime.strptime(content['pubDate'], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=YAHOO_TIME_ZONE)
                     except ValueError:
-                        pub_date = datetime.now()
+                        pub_date = datetime.now(TIME_ZONE)
                 
                 sentiments.append({
                     'title': title or 'N/A',

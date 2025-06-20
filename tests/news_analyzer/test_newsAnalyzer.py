@@ -1,6 +1,10 @@
 import pytest, datetime
 from unittest.mock import patch, MagicMock
 from app import news_analyzer
+from app import appconfig
+import pytz
+
+TIME_ZONE = pytz.timezone(appconfig.TIME_ZONE)
 
 def test_get_industry_and_sector_returns_dict():
     with patch("app.news_analyzer.data_fetcher.yf.Ticker") as mock_ticker:
@@ -11,7 +15,7 @@ def test_get_industry_and_sector_returns_dict():
 def test_fetch_recent_news_returns_list():
     with patch("app.news_analyzer.data_fetcher.yf.Ticker") as mock_ticker:
         mock_ticker.return_value.news = [
-            {"content": {"pubDate":  datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ'),}}
+            {"content": {"pubDate":  datetime.datetime.now(TIME_ZONE).strftime('%Y-%m-%dT%H:%M:%SZ'),}}
         ]
         result = news_analyzer.fetch_recent_news("AAPL", days_back=7)
         assert isinstance(result, list)
