@@ -214,7 +214,7 @@ def execute_buy_transaction(stock_id, symbol, quantity, price_per_share):
     conn = sqlite3.connect(appconfig.DB_NAME)
     c = conn.cursor()
     # Check if an entry exists for today
-    c.execute('SELECT id FROM portfolio_state WHERE last_transaction_date = ?', (transaction_date,))
+    c.execute('SELECT id FROM portfolio_state WHERE created_date = ?', (transaction_date,))
     row = c.fetchone()
     if row:
         # Update existing entry for today
