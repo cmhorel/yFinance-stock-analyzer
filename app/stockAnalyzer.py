@@ -37,7 +37,11 @@ def plot_stock_analysis(df_ticker, ticker, save_path=os.path.join(appconfig.PLOT
     df_ticker['MA20'] = df_ticker['close'].rolling(window=20).mean()
     df_ticker['MA50'] = df_ticker['close'].rolling(window=50).mean()
     df_ticker['RSI'] = calculate_rsi(df_ticker['close'])
-    df_ticker['Volatility'] = calculate_volatility(df_ticker['close'])  # NEW: Add volatility
+    df_ticker['Volatility'] = calculate_volatility(df_ticker['close'])
+    
+    # Calculate buy/sell signals for visualization
+    df_ticker['Buy_Signal'] = generate_buy_sell_signals(df_ticker, signal_type='buy')
+    df_ticker['Sell_Signal'] = generate_buy_sell_signals(df_ticker, signal_type='sell')
 
     stock_id = df_ticker['stock_id'].iloc[0]
     sector = df_ticker['sector'].iloc[0] if 'sector' in df_ticker.columns and pd.notna(df_ticker['sector'].iloc[0]) else 'Unknown'
@@ -46,7 +50,7 @@ def plot_stock_analysis(df_ticker, ticker, save_path=os.path.join(appconfig.PLOT
     avg_sentiment = news_analyzer.get_average_sentiment(stock_id)
     sector_color = get_sector_color(sector)
 
-    # Create subplots - Updated to include volatility
+    # Create subplots with volatility included
     fig = make_subplots(
         rows=4, cols=1,
         shared_xaxes=True,
@@ -104,9 +108,17 @@ def plot_stock_analysis(df_ticker, ticker, save_path=os.path.join(appconfig.PLOT
         row=2, col=1
     )
 
-    # RSI reference lines
-    fig.add_hline(y=70, line_dash="dash", line_color="red", opacity=0.5, row=2, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", opacity=0.5, row=2, col=1)
+    # RSI reference lines - add as shapes instead
+    fig.add_shape(
+        type="line", x0=df_ticker['date'].iloc[0], x1=df_ticker['date'].iloc[-1],
+        y0=70, y1=70, line=dict(color="red", width=1, dash="dash"),
+        row=2, col=1
+    )
+    fig.add_shape(
+        type="line", x0=df_ticker['date'].iloc[0], x1=df_ticker['date'].iloc[-1],
+        y0=30, y1=30, line=dict(color="green", width=1, dash="dash"),
+        row=2, col=1
+    )
 
     # NEW: Volatility
     fig.add_trace(
@@ -133,21 +145,36 @@ def plot_stock_analysis(df_ticker, ticker, save_path=os.path.join(appconfig.PLOT
         row=4, col=1
     )
 
-    # ... existing code for sentiment annotation ...
+    # Add buy/sell signals to the price chart
+    buy_signals = df_ticker[df_ticker['Buy_Signal'] == 1]
+    sell_signals = df_ticker[df_ticker['Sell_Signal'] == 1]
+    
+    if not buy_signals.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=buy_signals['date'], 
+                y=buy_signals['close'],
+                mode='markers',
+                name='Buy Signal',
+                marker=dict(color='green', size=10, symbol='triangle-up'),
+                hovertemplate='<b>Buy Signal</b><br>Date: %{x}<br>Price: $%{y:.2f}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+    
+    if not sell_signals.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=sell_signals['date'], 
+                y=sell_signals['close'],
+                mode='markers',
+                name='Sell Signal',
+                marker=dict(color='red', size=10, symbol='triangle-down'),
+                hovertemplate='<b>Sell Signal</b><br>Date: %{x}<br>Price: $%{y:.2f}<extra></extra>'
+            ),
+            row=1, col=1
+        )
 
-    # Update layout
-    fig.update_layout(
-        title=f'{ticker} Stock Analysis - {sector} Sector',
-        xaxis_title='Date',
-        height=900,  # Increased height for additional subplot
-        showlegend=True,
-        hovermode='x unified'
-    )
-
-    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
-    fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
-    fig.update_yaxes(title_text="Volatility", row=3, col=1)
-    fig.update_yaxes(title_text="Volume", row=4, col=1)
     # Add sentiment annotation
     sentiment_color = 'green' if avg_sentiment > 0 else 'red' if avg_sentiment < 0 else 'gray'
     sentiment_text = f'Avg Sentiment: {avg_sentiment:.3f}'
@@ -166,18 +193,20 @@ def plot_stock_analysis(df_ticker, ticker, save_path=os.path.join(appconfig.PLOT
         row=1, col=1
     )
 
-    # Update layout
+    # Update layout - single layout update
     fig.update_layout(
         title=f'{ticker} Stock Analysis - {sector} Sector',
         xaxis_title='Date',
-        height=800,
+        height=900,  # Increased height for 4 subplots
         showlegend=True,
         hovermode='x unified'
     )
 
+    # Update y-axes
     fig.update_yaxes(title_text="Price ($)", row=1, col=1)
     fig.update_yaxes(title_text="RSI", row=2, col=1, range=[0, 100])
-    fig.update_yaxes(title_text="Volume", row=3, col=1)
+    fig.update_yaxes(title_text="Volatility", row=3, col=1)
+    fig.update_yaxes(title_text="Volume", row=4, col=1)
 
     # Save as HTML
     filename = os.path.join(save_path, f"{ticker}_analysis.html")
@@ -294,30 +323,113 @@ def calculate_volatility(series: pd.Series, period: int = 20) -> pd.Series:
     volatility = returns.rolling(window=period).std() * np.sqrt(252)  # Annualized volatility
     return volatility.fillna(0)
 
+def generate_buy_sell_signals(df_ticker, signal_type='buy'):
+    """Generate buy/sell signals for visualization on charts."""
+    if len(df_ticker) < 50:
+        return pd.Series([0] * len(df_ticker), index=df_ticker.index)
+    
+    close = df_ticker['close']
+    volume = df_ticker['volume']
+    
+    # Calculate indicators
+    ma20 = close.rolling(window=20).mean()
+    ma50 = close.rolling(window=50).mean()
+    rsi = calculate_rsi(close)
+    volatility = calculate_volatility(close)
+    
+    signals = pd.Series([0] * len(df_ticker), index=df_ticker.index)
+    
+    for i in range(50, len(df_ticker)):  # Start after enough data for indicators
+        current_close = close.iloc[i]
+        current_ma20 = ma20.iloc[i]
+        current_ma50 = ma50.iloc[i]
+        current_rsi = rsi.iloc[i]
+        current_vol = volatility.iloc[i]
+        
+        # 7-day momentum
+        momentum_7d = (close.iloc[i] - close.iloc[i-7]) / close.iloc[i-7] if i >= 7 else 0
+        
+        # Volume surge
+        avg_volume = volume.iloc[i-20:i].mean()
+        volume_ratio = volume.iloc[i] / avg_volume if avg_volume > 0 else 1
+        
+        if signal_type == 'buy':
+            # Buy signal conditions (more conservative)
+            conditions = [
+                current_close > current_ma20,  # Price above 20-day MA
+                current_ma20 > current_ma50,   # 20-day MA above 50-day MA (uptrend)
+                current_rsi < 40,              # RSI oversold
+                momentum_7d > 0.02,            # 2%+ weekly momentum
+                volume_ratio > 1.3,            # Volume surge
+                current_vol < 0.4              # Reasonable volatility
+            ]
+            
+            if sum(conditions) >= 4:  # Require at least 4 conditions
+                signals.iloc[i] = 1
+                
+        elif signal_type == 'sell':
+            # Sell signal conditions
+            conditions = [
+                current_close < current_ma20,  # Price below 20-day MA
+                current_ma20 < current_ma50,   # 20-day MA below 50-day MA (downtrend)
+                current_rsi > 70,              # RSI overbought
+                momentum_7d < -0.02,           # 2%+ weekly decline
+                current_vol > 0.5              # High volatility
+            ]
+            
+            if sum(conditions) >= 3:  # Require at least 3 conditions
+                signals.iloc[i] = 1
+    
+    return signals
+
 def create_sector_overview_plot(buy_candidates, sell_candidates, save_path=appconfig.PLOTS_PATH):
-    """Create an interactive sector overview plot."""
+    """Create an enhanced interactive sector overview plot with volatility information."""
     os.makedirs(save_path, exist_ok=True)
     
-    # Combine all candidates
+    # Get full stock data for volatility calculation
+    df = get_stock_data()
+    grouped = df.groupby('symbol')
+    
+    # Combine all candidates with enhanced data
     all_candidates = []
     for ticker, score, sentiment, industry, sector in buy_candidates:
+        # Get volatility for this ticker
+        volatility = 0.2  # default
+        if ticker in grouped.groups:
+            ticker_data = grouped.get_group(ticker)
+            if len(ticker_data) > 20:
+                vol_series = calculate_volatility(ticker_data['close'])
+                volatility = vol_series.iloc[-1] if not pd.isna(vol_series.iloc[-1]) else 0.2
+        
         all_candidates.append({
             'ticker': ticker,
             'score': score,
             'sentiment': sentiment,
             'industry': industry,
             'sector': sector,
-            'recommendation': 'Buy'
+            'volatility': volatility,
+            'recommendation': 'Buy',
+            'risk_level': 'Low' if volatility < 0.3 else 'Medium' if volatility < 0.5 else 'High'
         })
     
     for ticker, score, sentiment, industry, sector in sell_candidates:
+        # Get volatility for this ticker
+        volatility = 0.2  # default
+        if ticker in grouped.groups:
+            ticker_data = grouped.get_group(ticker)
+            if len(ticker_data) > 20:
+                vol_series = calculate_volatility(ticker_data['close'])
+                volatility = vol_series.iloc[-1] if not pd.isna(vol_series.iloc[-1]) else 0.2
+        
         all_candidates.append({
             'ticker': ticker,
             'score': score,
             'sentiment': sentiment,
             'industry': industry,
             'sector': sector,
-            'recommendation': 'Sell'
+            'volatility': volatility,
+            'recommendation': 'Sell',
+            'risk_level': 'Low' if volatility < 0.3 else 'Medium' if volatility < 0.5 else 'High'
         })
     
     if not all_candidates:
@@ -325,32 +437,98 @@ def create_sector_overview_plot(buy_candidates, sell_candidates, save_path=appco
     
     df_candidates = pd.DataFrame(all_candidates)
     
-    # Create scatter plot
+    # Create enhanced scatter plot with volatility as size
     fig = px.scatter(
         df_candidates,
         x='sentiment',
         y='score',
         color='sector',
         symbol='recommendation',
-        size='score',
-        hover_data=['ticker', 'industry'],
-        title='Stock Recommendations by Sector and Sentiment',
+        size='volatility',
+        hover_data=['ticker', 'industry', 'volatility', 'risk_level'],
+        title='Stock Recommendations: Sentiment vs Score (Size = Volatility)',
         labels={
             'sentiment': 'Average Sentiment Score',
             'score': 'Recommendation Score',
-            'sector': 'Sector'
+            'sector': 'Sector',
+            'volatility': 'Volatility'
         },
-        color_discrete_map=SECTOR_COLORS
+        color_discrete_map=SECTOR_COLORS,
+        size_max=20
     )
     
+    # Add quadrant lines for better interpretation
+    fig.add_vline(x=0, line_dash="dash", line_color="gray", opacity=0.5)
+    fig.add_hline(y=5, line_dash="dash", line_color="gray", opacity=0.5)
+    
+    # Add quadrant annotations
+    fig.add_annotation(x=0.3, y=8, text="High Score<br>Positive Sentiment", 
+                      showarrow=False, bgcolor="lightgreen", opacity=0.7)
+    fig.add_annotation(x=-0.3, y=8, text="High Score<br>Negative Sentiment", 
+                      showarrow=False, bgcolor="lightyellow", opacity=0.7)
+    fig.add_annotation(x=0.3, y=3, text="Low Score<br>Positive Sentiment", 
+                      showarrow=False, bgcolor="lightblue", opacity=0.7)
+    fig.add_annotation(x=-0.3, y=3, text="Low Score<br>Negative Sentiment", 
+                      showarrow=False, bgcolor="lightcoral", opacity=0.7)
+    
     fig.update_layout(
-        height=600,
-        showlegend=True
+        height=700,
+        showlegend=True,
+        xaxis_title="News Sentiment Score (Negative ← → Positive)",
+        yaxis_title="Recommendation Score (Higher = Stronger Signal)"
     )
     
     filename = os.path.join(save_path, "sector_overview.html")
     fig.write_html(filename)
-    print(f"Saved sector overview plot to {filename}")
+    print(f"Saved enhanced sector overview plot to {filename}")
+    
+    # Also create a volatility-focused chart
+    create_volatility_risk_chart(df_candidates, save_path)
+    
+    return fig
+
+def create_volatility_risk_chart(df_candidates, save_path):
+    """Create a separate chart focusing on volatility and risk analysis."""
+    
+    # Create a copy and fix sentiment for size (must be positive)
+    df_viz = df_candidates.copy()
+    df_viz['sentiment_abs'] = abs(df_viz['sentiment']) + 0.1  # Add small offset to avoid zero size
+    
+    # Create volatility vs score chart
+    fig = px.scatter(
+        df_viz,
+        x='volatility',
+        y='score',
+        color='recommendation',
+        size='sentiment_abs',
+        hover_data=['ticker', 'sector', 'industry', 'risk_level', 'sentiment'],
+        title='Risk Analysis: Volatility vs Recommendation Score',
+        labels={
+            'volatility': 'Annualized Volatility',
+            'score': 'Recommendation Score',
+            'sentiment_abs': 'Sentiment Strength'
+        },
+        color_discrete_map={'Buy': 'green', 'Sell': 'red'}
+    )
+    
+    # Add risk zones
+    fig.add_vrect(x0=0, x1=0.3, fillcolor="green", opacity=0.1, 
+                  annotation_text="Low Risk", annotation_position="top left")
+    fig.add_vrect(x0=0.3, x1=0.5, fillcolor="yellow", opacity=0.1, 
+                  annotation_text="Medium Risk", annotation_position="top")
+    fig.add_vrect(x0=0.5, x1=2, fillcolor="red", opacity=0.1, 
+                  annotation_text="High Risk", annotation_position="top right")
+    
+    fig.update_layout(
+        height=600,
+        showlegend=True,
+        xaxis_title="Volatility (Risk Level)",
+        yaxis_title="Recommendation Score"
+    )
+    
+    filename = os.path.join(save_path, "volatility_risk_analysis.html")
+    fig.write_html(filename)
+    print(f"Saved volatility risk analysis to {filename}")
     
     return fig
 
