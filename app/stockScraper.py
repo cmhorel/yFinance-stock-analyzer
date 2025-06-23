@@ -50,6 +50,7 @@ def initialize_db():
             close REAL,
             volume INTEGER,
             PRIMARY KEY (stock_id, date),
+            UNIQUE (stock_id, date),
             FOREIGN KEY (stock_id) REFERENCES stocks(id)
         )
     ''')
@@ -178,11 +179,24 @@ def sync_ticker(ticker, analyze_sentiment=True):
     try:
         stock_id = db_manager.get_or_create_stock_id(ticker)
         ld = get_latest_date(ticker)
-        # Use helper to ensure we only use a fully closed trading day
-        ld = get_latest_complete_trading_date(ld)
-        start_date = (datetime.strptime(ld, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d') if ld else '2020-01-01'
+        
+        # Determine start date with proper market close logic
+        if ld:
+            # Check if we should skip today's data due to market not being closed
+            now_market = datetime.now(pytz.timezone("US/Eastern"))
+            today_str = now_market.strftime('%Y-%m-%d')
+            
+            if ld == today_str and now_market.hour < 16:
+                # Latest data is today but market hasn't closed - don't fetch new data
+                print(f"Skipping {ticker} - latest data is today ({ld}) but market hasn't closed yet")
+                return
+            else:
+                # Safe to fetch from day after latest date
+                start_date = (datetime.strptime(ld, '%Y-%m-%d') + timedelta(days=1)).strftime('%Y-%m-%d')
+        else:
+            start_date = '2020-01-01'
 
-        print(f"Syncing {ticker} from {start_date}. LD was {ld}")
+        print(f"Syncing {ticker} from {start_date}. Latest DB date was {ld}")
         hist = yf_download_with_retry(
             ticker,
             start=start_date,

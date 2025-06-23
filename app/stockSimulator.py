@@ -130,17 +130,30 @@ def calculate_current_portfolio_value():
     if not holdings:
         return cash_balance
     
-    # Get current prices for all held stocks
-    symbols = [holding[1] for holding in holdings]  # symbol is at index 6
-    current_prices = get_current_stock_prices(symbols)
-    
+    # Use database prices for consistency (same as reconstruct_holdings_and_value)
     holdings_value = 0.0
+    conn = sqlite3.connect(appconfig.DB_NAME)
+    
     for holding in holdings:
         symbol = holding[1]
         quantity = holding[2]
-        if symbol in current_prices:
-            holdings_value += quantity * current_prices[symbol]
+        
+        # Get latest price from database
+        cursor = conn.execute('''
+            SELECT sp.close FROM stock_prices sp
+            JOIN stocks s ON sp.stock_id = s.id
+            WHERE s.symbol = ? 
+            ORDER BY sp.date DESC LIMIT 1
+        ''', (symbol,))
+        result = cursor.fetchone()
+        
+        if result:
+            price = result[0]
+            holdings_value += quantity * price
+        else:
+            print(f"Warning: No price data for {symbol} in database")
     
+    conn.close()
     return cash_balance + holdings_value
 
 def can_make_transactions():
@@ -220,7 +233,7 @@ def execute_buy_transaction(stock_id, symbol, quantity, price_per_share):
         # Update existing entry for today
         c.execute('''
             UPDATE portfolio_state
-            SET cash_balance = ?, total_portfolio_value = ?, created_date = ?
+            SET cash_balance = ?, total_portfolio_value = ?, last_transaction_date = ?
             WHERE id = ?
         ''', (new_cash, calculate_current_portfolio_value_with_cash(new_cash), transaction_date, row[0]))
     else:
@@ -257,7 +270,7 @@ def execute_sell_transaction(stock_id, symbol, quantity, price_per_share):
     conn = sqlite3.connect(appconfig.DB_NAME)
     c = conn.cursor()
     # Check if an entry exists for today
-    c.execute('SELECT id FROM portfolio_state WHERE last_transaction_date = ?', (transaction_date,))
+    c.execute('SELECT id FROM portfolio_state WHERE created_date = ?', (transaction_date,))
     row = c.fetchone()
     if row:
         # Update existing entry for today
@@ -392,6 +405,7 @@ def reconstruct_holdings_and_value(target_date, transactions_df):
     if isinstance(target_date, str):
         target_date = pd.to_datetime(target_date)
     date_str = target_date.strftime('%Y-%m-%d')
+    
     # Get all transactions up to and including this date
     day_transactions = transactions_df[transactions_df['transaction_date'] <= date_str]
     holdings = {}
@@ -399,33 +413,35 @@ def reconstruct_holdings_and_value(target_date, transactions_df):
         symbol = tx['symbol']
         qty = tx['quantity'] if tx['transaction_type'] == 'BUY' else -tx['quantity']
         holdings[symbol] = holdings.get(symbol, 0) + qty
-        if holdings[symbol] == 0:
-            del holdings[symbol]
-    # Now, for each holding, get the closing price for this date
+        if holdings[symbol] <= 0:
+            holdings.pop(symbol, None)
+    
+    # Calculate holdings value using database prices as fallback
     holdings_value = 0.0
     if holdings:
-        try:
-            prices = yf.download(
-                list(holdings.keys()),
-                start=date_str,
-                end=(target_date + timedelta(days=1)).strftime('%Y-%m-%d'),
-                progress=False
-            )
-            for symbol, qty in holdings.items():
-                price = 0
-                if len(holdings) == 1:
-                    if not prices.empty and 'Close' in prices.columns:
-                        price_series = prices['Close'].dropna()
-                        if not price_series.empty:
-                            price = price_series.iloc[-1]
+        # Try to get prices from database first (more reliable)
+        conn = sqlite3.connect(appconfig.DB_NAME)
+        for symbol, qty in holdings.items():
+            price = 0.0
+            try:
+                # Get the closest price from database
+                cursor = conn.execute('''
+                    SELECT sp.close FROM stock_prices sp
+                    JOIN stocks s ON sp.stock_id = s.id
+                    WHERE s.symbol = ? AND sp.date <= ?
+                    ORDER BY sp.date DESC LIMIT 1
+                ''', (symbol, date_str))
+                result = cursor.fetchone()
+                if result:
+                    price = result[0]
                 else:
-                    if 'Close' in prices and symbol in prices['Close']:
-                        price_series = prices['Close'][symbol].dropna()
-                        if not price_series.empty:
-                            price = price_series.iloc[-1]
-                holdings_value += qty * price
-        except Exception as e:
-            print(f"Price fetch failed for {list(holdings.keys())} on {date_str}: {e}")
+                    print(f"Warning: No price data found for {symbol} on or before {date_str}")
+            except Exception as e:
+                print(f"Database price lookup failed for {symbol}: {e}")
+            
+            holdings_value += qty * price
+        conn.close()
+    
     return holdings, holdings_value
 
 def create_portfolio_performance_plot(save_path=appconfig.PLOTS_PATH):
@@ -504,11 +520,10 @@ def create_portfolio_performance_plot(save_path=appconfig.PLOTS_PATH):
     fig.add_trace(
         go.Scatter(
             x=date_range,
-            y=holdings_values,#[cash + holding for cash, holding in zip(cash_values, holdings_values)],
+            y=holdings_values,
             mode='lines+markers',
             marker=dict(size=20, color='orange', symbol='circle'),
             name='Holdings',
-            fill='tonexty',
             line=dict(color='orange'),
             hovertemplate='Date: %{x}<br>Holdings Value: $%{y:,.2f}<extra></extra>'
         ),

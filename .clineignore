@@ -1,0 +1,4 @@
+# Codebase State Switch Scripts - exclude from Cline context
+switch.py
+*.zip
+.git/
