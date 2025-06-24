@@ -57,9 +57,10 @@ class TestStockSimulator(unittest.TestCase):
         self.assertIn("Cash Balance", report)
         self.assertIn("Current Total Portfolio Value", report)
 
+    @patch('app.stockSimulator.db_manager.get_latest_stock_close_price')
     @patch('app.stockSimulator.db_manager.get_transactions_df')
     @patch('app.stockSimulator.yf.download')
-    def test_reconstruct_holdings_and_value(self, mock_yf_download, mock_get_tx_df):
+    def test_reconstruct_holdings_and_value(self, mock_yf_download, mock_get_tx_df, mock_get_latest_price):
         # Prepare fake transactions
         tx_data = pd.DataFrame([
             {'symbol': 'AAPL', 'transaction_type': 'BUY', 'quantity': 2, 'transaction_date': '2024-06-01'},
@@ -67,11 +68,30 @@ class TestStockSimulator(unittest.TestCase):
             {'symbol': 'AAPL', 'transaction_type': 'SELL', 'quantity': 1, 'transaction_date': '2024-06-03'},
         ])
         mock_get_tx_df.return_value = tx_data
-        # Prepare fake price data
+        mock_get_latest_price.return_value = 150.0  # Mock latest close price for AAPL
+
+        # The yf.download mock is not used anymore, but keep it for completeness
         mock_yf_download.return_value = pd.DataFrame({'Close': [150.0]}, index=[pd.Timestamp('2024-06-03')])
+
+        import app.stockSimulator as stockSimulator
         holdings, value = stockSimulator.reconstruct_holdings_and_value('2024-06-03', tx_data)
         self.assertEqual(holdings['AAPL'], 4)
         self.assertEqual(value, 4 * 150.0)
+
+    @patch('app.stockSimulator.db_manager.get_latest_stock_close_price')
+    @patch('app.stockSimulator.get_portfolio_state')
+    def test_calculate_current_portfolio_value(self, mock_get_portfolio_state, mock_get_latest_price):
+        # Set up mock portfolio and holdings
+        mock_get_portfolio_state.return_value = (
+            [1, 1000, 0, None, None],  # portfolio: id, cash_balance, ...
+            [(1, 'AAPL', 2, 100.0, 200.0)]  # holdings: stock_id, symbol, quantity, avg_cost, total_cost
+        )
+        mock_get_latest_price.return_value = 120.0  # Mock latest close price for AAPL
+
+        import app.stockSimulator as stockSimulator
+        value = stockSimulator.calculate_current_portfolio_value()
+        # cash_balance + 2 * 120.0 = 1000 + 240 = 1240
+        self.assertEqual(value, 1240.0)
 
 if __name__ == '__main__':
     unittest.main()

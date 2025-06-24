@@ -18,12 +18,13 @@ TIME_ZONE  = pytz.timezone(appconfig.TIME_ZONE)  # NEW: Use timezone from appcon
 
 yt_session = requests.Session(impersonate="chrome")
 
-db_manager = DatabaseManager()  # NEW: Create a global instance of the database manager
+
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 DB_NAME = appconfig.DB_NAME
+db_manager = DatabaseManager()  # NEW: Create a global instance of the database manager
 THREADS = 10
 BATCH_SIZE = 5
 
@@ -82,7 +83,102 @@ def initialize_db():
     conn.commit()
     conn.close()
 
-
+def validate_price_data(ticker, new_data, previous_close=None, tolerance=0.10, max_retries=3):
+    """
+    Validate price data against previous close with tolerance check.
+    Returns validated data or None if validation fails after retries.
+    """
+    if new_data.empty:
+        return new_data
+    
+    # If we don't have previous close, get it from database
+    if previous_close is None:
+        previous_close = db_manager.get_latest_stock_close_price(ticker)
+    
+    if previous_close is None:
+        # No previous data to compare against, accept the data
+        return new_data
+    
+    validated_data = new_data.copy()
+    
+    for idx, row in new_data.iterrows():
+        current_close = row['Close']
+        
+        # Check if current close is within tolerance of previous close
+        price_change_ratio = abs(current_close - previous_close) / previous_close
+        
+        if price_change_ratio > tolerance:
+            print(f"WARNING: {ticker} price anomaly detected on {idx.strftime('%Y-%m-%d')}")
+            print(f"Previous close: ${previous_close:.2f}, Current close: ${current_close:.2f}")
+            print(f"Change: {price_change_ratio*100:.1f}% (threshold: {tolerance*100:.1f}%)")
+            
+            # Retry fetching data for this specific date
+            retry_count = 0
+            while retry_count < max_retries:
+                print(f"Retrying data fetch for {ticker} (attempt {retry_count + 1}/{max_retries})...")
+                time.sleep(1)  # Wait before retry
+                
+                try:
+                    retry_data = yf_download_with_retry(
+                        ticker,
+                        start=idx.strftime('%Y-%m-%d'),
+                        end=(idx + timedelta(days=1)).strftime('%Y-%m-%d'),
+                        progress=False
+                    )
+                    
+                    if not retry_data.empty and idx in retry_data.index:
+                        retry_close = retry_data.loc[idx, 'Close']
+                        retry_change_ratio = abs(retry_close - previous_close) / previous_close
+                        
+                        if retry_change_ratio <= tolerance:
+                            print(f"Retry successful: New close ${retry_close:.2f}")
+                            validated_data.loc[idx] = retry_data.loc[idx]
+                            break
+                        elif retry_close == current_close:
+                            # Same anomalous value returned, likely legitimate
+                            print(f"Same value returned on retry, likely legitimate price movement")
+                            break
+                    
+                    retry_count += 1
+                    
+                except Exception as e:
+                    print(f"Retry failed: {e}")
+                    retry_count += 1
+            
+            # If all retries failed or returned same anomalous value, prompt user
+            if retry_count >= max_retries:
+                print(f"\nAnomalous price data for {ticker} on {idx.strftime('%Y-%m-%d')}:")
+                print(f"Previous close: ${previous_close:.2f}")
+                print(f"New close: ${current_close:.2f}")
+                print(f"Change: {price_change_ratio*100:.1f}%")
+                
+                # Auto-accept after timeout
+                import select
+                import sys
+                
+                print("Accept this data? (y/n) - Auto-denying in 5 seconds...")
+                
+                # Non-blocking input with timeout
+                ready, _, _ = select.select([sys.stdin], [], [], 5.0)
+                if ready:
+                    user_input = sys.stdin.readline().strip().lower()
+                    if user_input == 'y':
+                        print(f"Accepting data for {ticker} on {idx.strftime('%Y-%m-%d')}")
+                        # keep the row
+                    else:
+                        print(f"Rejecting data for {ticker} on {idx.strftime('%Y-%m-%d')}")
+                        validated_data = validated_data.drop(idx)
+                        continue
+                else:
+                    # No input (timeout or non-interactive), reject by default
+                    print(f"Rejecting data for {ticker} on {idx.strftime('%Y-%m-%d')} (no user input)")
+                    validated_data = validated_data.drop(idx)
+                    continue
+        
+        # Update previous_close for next iteration
+        previous_close = validated_data.loc[idx, 'Close'] if idx in validated_data.index else previous_close
+    
+    return validated_data
 
 def yf_download_with_retry(*args, max_retries=5, **kwargs):
     for attempt in range(max_retries):
@@ -132,13 +228,15 @@ def sync_batch(tickers):
     start = min(starts.values())
 
     try:
-        #hist = yf.download(tickers, start=start, group_by='ticker', threads=True, progress=False)
         hist = yf_download_with_retry(tickers, start=start, group_by='ticker', threads=True, progress=False)
         for s in tickers:
             if s not in hist.columns.get_level_values(0):
                 continue
             df = hist[s].dropna()
-            for idx, row in df.iterrows():
+            # --- ADD VALIDATION HERE ---
+            previous_close = db_manager.get_latest_stock_close_price(s)
+            validated_df = validate_price_data(s, df, previous_close)
+            for idx, row in validated_df.iterrows():
                 d = idx.strftime('%Y-%m-%d')
                 if d < starts[s]: continue
                 c.execute('INSERT OR IGNORE INTO stock_prices VALUES (?,?,?,?,?,?,?)',
@@ -196,17 +294,25 @@ def sync_ticker(ticker, analyze_sentiment=True):
         else:
             start_date = '2020-01-01'
 
-        print(f"Syncing {ticker} from {start_date}. Latest DB date was {ld}")
         hist = yf_download_with_retry(
             ticker,
             start=start_date,
             progress=False
         )
+        print(hist)
         if hist.empty:
             print(f"No new data for {ticker}")
         else:
+            # Validate the data before processing
+            previous_close = db_manager.get_latest_stock_close_price(ticker) if ld else None
+            validated_hist = validate_price_data(ticker, hist, previous_close)
+            
+            if validated_hist.empty:
+                print(f"All data rejected for {ticker}")
+                return
+            
             price_data = []
-            for idx, row in hist.iterrows():
+            for idx, row in validated_hist.iterrows():
                 d = idx.strftime('%Y-%m-%d')
                 if d < start_date:
                     continue
@@ -220,6 +326,7 @@ def sync_ticker(ticker, analyze_sentiment=True):
                     'close': float(row['Close']),
                     'volume': int(row['Volume'])
                 })
+            print(f"Validated {len(price_data)} new price records for {ticker}")
             if price_data:
                 db_manager.store_stock_prices(stock_id, price_data)
                 print(f"Stored prices for {ticker} up to {price_data[-1]['date']}")

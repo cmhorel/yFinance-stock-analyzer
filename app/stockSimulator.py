@@ -139,17 +139,17 @@ def calculate_current_portfolio_value():
         quantity = holding[2]
         
         # Get latest price from database
-        cursor = conn.execute('''
-            SELECT sp.close FROM stock_prices sp
-            JOIN stocks s ON sp.stock_id = s.id
-            WHERE s.symbol = ? 
-            ORDER BY sp.date DESC LIMIT 1
-        ''', (symbol,))
-        result = cursor.fetchone()
+        # cursor = conn.execute('''
+        #     SELECT sp.close FROM stock_prices sp
+        #     JOIN stocks s ON sp.stock_id = s.id
+        #     WHERE s.symbol = ? 
+        #     ORDER BY sp.date DESC LIMIT 1
+        # ''', (symbol,))
+        # result = cursor.fetchone()
+        latest_price=db_manager.get_latest_stock_close_price(symbol)
         
-        if result:
-            price = result[0]
-            holdings_value += quantity * price
+        if latest_price:
+            holdings_value += quantity * latest_price
         else:
             print(f"Warning: No price data for {symbol} in database")
     
@@ -424,16 +424,17 @@ def reconstruct_holdings_and_value(target_date, transactions_df):
         for symbol, qty in holdings.items():
             price = 0.0
             try:
-                # Get the closest price from database
-                cursor = conn.execute('''
-                    SELECT sp.close FROM stock_prices sp
-                    JOIN stocks s ON sp.stock_id = s.id
-                    WHERE s.symbol = ? AND sp.date <= ?
-                    ORDER BY sp.date DESC LIMIT 1
-                ''', (symbol, date_str))
-                result = cursor.fetchone()
-                if result:
-                    price = result[0]
+                # # Get the closest price from database
+                # cursor = conn.execute('''
+                #     SELECT sp.close FROM stock_prices sp
+                #     JOIN stocks s ON sp.stock_id = s.id
+                #     WHERE s.symbol = ? AND sp.date <= ?
+                #     ORDER BY sp.date DESC LIMIT 1
+                # ''', (symbol, date_str))
+                # result = cursor.fetchone()
+                latest_price=db_manager.get_latest_stock_close_price(symbol)
+                if latest_price:
+                    price = latest_price
                 else:
                     print(f"Warning: No price data found for {symbol} on or before {date_str}")
             except Exception as e:
