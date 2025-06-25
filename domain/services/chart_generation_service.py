@@ -467,7 +467,7 @@ class ChartGenerationService:
             return False
     
     async def generate_portfolio_performance_chart(self, portfolio_service) -> bool:
-        """Generate portfolio performance chart."""
+        """Generate portfolio performance chart using actual portfolio history."""
         try:
             if not self.portfolio_repo:
                 self.logger.warning("No portfolio repository available")
@@ -480,64 +480,146 @@ class ChartGenerationService:
                 return False
             
             portfolio = portfolios[0]
-            holdings = await self.portfolio_repo.get_holdings_by_portfolio_id(portfolio.id)
             
-            # Create portfolio performance data
-            dates = []
-            values = []
+            # Get actual portfolio history from database
+            history = await self.portfolio_repo.get_portfolio_history(portfolio.id, days=90)
             
-            # For now, create a simple performance chart
-            # In a real implementation, you'd track historical portfolio values
-            current_date = datetime.now()
-            initial_value = 100000  # Starting value
+            if not history:
+                # If no history exists, create initial snapshot and show current value
+                current_summary = await portfolio_service.get_portfolio_summary()
+                if 'total_value' in current_summary:
+                    # Record current snapshot
+                    await portfolio_service._record_portfolio_snapshot(portfolio.id)
+                    # Try to get history again
+                    history = await self.portfolio_repo.get_portfolio_history(portfolio.id, days=90)
+                
+                if not history:
+                    # Still no history, create a simple chart with current value
+                    dates = [datetime.now().date()]
+                    values = [current_summary.get('total_value', 100000)]
+                    cash_values = [current_summary.get('cash_balance', 100000)]
+                    holdings_values = [current_summary.get('total_value', 100000) - current_summary.get('cash_balance', 0)]
+                else:
+                    dates = [datetime.fromisoformat(h['date']).date() if isinstance(h['date'], str) else h['date'] for h in history]
+                    values = [h['total_value'] for h in history]
+                    cash_values = [h['cash_balance'] for h in history]
+                    holdings_values = [h['holdings_value'] for h in history]
+            else:
+                # Use actual historical data
+                dates = [datetime.fromisoformat(h['date']).date() if isinstance(h['date'], str) else h['date'] for h in history]
+                values = [h['total_value'] for h in history]
+                cash_values = [h['cash_balance'] for h in history]
+                holdings_values = [h['holdings_value'] for h in history]
             
-            # Generate sample historical data (replace with actual historical tracking)
-            for i in range(30):
-                date = current_date - timedelta(days=29-i)
-                # Simple simulation - replace with actual portfolio history
-                value = initial_value * (1 + np.random.normal(0, 0.01) * i/30)
-                dates.append(date)
-                values.append(value)
-            
-            # Get current portfolio value
-            current_summary = await portfolio_service.get_portfolio_summary()
-            if 'total_value' in current_summary:
-                values[-1] = current_summary['total_value']
-            
-            # Create chart
+            # Create chart with multiple traces
             fig = go.Figure()
             
+            # Total portfolio value
             fig.add_trace(go.Scatter(
                 x=dates,
                 y=values,
                 mode='lines+markers',
-                name='Portfolio Value',
-                line=dict(color='blue', width=2),
-                hovertemplate='<b>Portfolio Value</b><br>Date: %{x}<br>Value: $%{y:,.2f}<extra></extra>'
+                name='Total Portfolio Value',
+                line=dict(color='blue', width=3),
+                hovertemplate='<b>Total Value</b><br>Date: %{x}<br>Value: $%{y:,.2f}<extra></extra>'
+            ))
+            
+            # Cash balance
+            fig.add_trace(go.Scatter(
+                x=dates,
+                y=cash_values,
+                mode='lines',
+                name='Cash Balance',
+                line=dict(color='green', width=2, dash='dot'),
+                hovertemplate='<b>Cash</b><br>Date: %{x}<br>Value: $%{y:,.2f}<extra></extra>'
+            ))
+            
+            # Holdings value
+            fig.add_trace(go.Scatter(
+                x=dates,
+                y=holdings_values,
+                mode='lines',
+                name='Holdings Value',
+                line=dict(color='orange', width=2, dash='dash'),
+                hovertemplate='<b>Holdings</b><br>Date: %{x}<br>Value: $%{y:,.2f}<extra></extra>'
             ))
             
             # Add benchmark line (initial investment)
+            initial_value = 100000
             fig.add_hline(y=initial_value, line_dash="dash", line_color="gray", 
-                         annotation_text="Initial Investment")
+                         annotation_text="Initial Investment ($100,000)")
             
-            # Calculate and display performance metrics
-            total_return = values[-1] - initial_value
-            return_pct = (total_return / initial_value) * 100
+            # Calculate performance metrics
+            if len(values) > 0:
+                current_value = values[-1]
+                total_return = current_value - initial_value
+                return_pct = (total_return / initial_value) * 100
+                
+                # Calculate daily returns if we have multiple data points
+                daily_returns = []
+                if len(values) > 1:
+                    for i in range(1, len(values)):
+                        if values[i-1] != 0:
+                            daily_return = (values[i] - values[i-1]) / values[i-1]
+                            daily_returns.append(daily_return)
+                
+                # Calculate volatility (annualized)
+                volatility = 0
+                if len(daily_returns) > 1:
+                    volatility = np.std(daily_returns) * np.sqrt(252) * 100  # Annualized volatility in %
+                
+                # Calculate max drawdown
+                max_drawdown = 0
+                peak = values[0]
+                for value in values:
+                    if value > peak:
+                        peak = value
+                    drawdown = (peak - value) / peak
+                    if drawdown > max_drawdown:
+                        max_drawdown = drawdown
+                
+                max_drawdown_pct = max_drawdown * 100
+                
+                title = f'Portfolio Performance - Total Return: ${total_return:,.2f} ({return_pct:+.2f}%)'
+                if volatility > 0:
+                    title += f' | Volatility: {volatility:.1f}% | Max Drawdown: {max_drawdown_pct:.1f}%'
+            else:
+                title = 'Portfolio Performance'
             
             fig.update_layout(
-                title=f'Portfolio Performance (Total Return: ${total_return:,.2f} / {return_pct:.2f}%)',
+                title=title,
                 xaxis_title='Date',
                 yaxis_title='Portfolio Value ($)',
-                height=500,
+                height=600,
                 showlegend=True,
-                hovermode='x unified'
+                hovermode='x unified',
+                xaxis=dict(
+                    rangeslider=dict(visible=True),
+                    type='date'
+                )
             )
+            
+            # Add annotations for key metrics
+            if len(values) > 0:
+                fig.add_annotation(
+                    x=0.02, y=0.98,
+                    xref='paper', yref='paper',
+                    text=f"Current Value: ${values[-1]:,.2f}<br>" +
+                         f"Cash: ${cash_values[-1]:,.2f}<br>" +
+                         f"Holdings: ${holdings_values[-1]:,.2f}<br>" +
+                         f"Data Points: {len(values)}",
+                    showarrow=False,
+                    bgcolor="rgba(255,255,255,0.8)",
+                    bordercolor="gray",
+                    borderwidth=1,
+                    font=dict(size=10)
+                )
             
             # Save chart
             filename = os.path.join(self.plots_dir, "portfolio_performance.html")
             fig.write_html(filename)
             
-            self.logger.info("Generated portfolio performance chart")
+            self.logger.info(f"Generated portfolio performance chart with {len(values)} data points")
             return True
             
         except Exception as e:
