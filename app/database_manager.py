@@ -371,5 +371,23 @@ class DatabaseManager:
             )
             conn.commit()
 
+    def get_stock_close_price_on_date(self, symbol: str, date: str) -> Optional[float]:
+        """
+        Get the closing price for a stock on a specific date.
+        :param symbol: Stock ticker symbol (e.g., 'AAPL')
+        :param date: Date string in 'YYYY-MM-DD' format
+        :return: Closing price as float, or None if not found
+        """
+        with self.get_connection() as conn:
+            cursor = conn.execute('''
+                SELECT sp.close
+                FROM stock_prices sp
+                JOIN stocks s ON sp.stock_id = s.id
+                WHERE s.symbol = ? AND sp.date = ?
+                LIMIT 1
+            ''', (symbol, date))
+            result = cursor.fetchone()
+            return float(result[0]) if result else None
+
 # Create global instance
 db_manager = DatabaseManager()

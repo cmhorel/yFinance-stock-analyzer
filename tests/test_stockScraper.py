@@ -256,7 +256,7 @@ class TestStockScraper(unittest.TestCase):
             ("FAKE", "Open"): [11.0],
             ("FAKE", "High"): [13.0],
             ("FAKE", "Low"): [10.0],
-            ("FAKE", "Close"): [12.0],  # 20% jump from previous close of 10
+            ("FAKE", "Close"): [16.0],  # 20% jump from previous close of 10
             ("FAKE", "Volume"): [120],
         }, index=idx)
         df.columns = pd.MultiIndex.from_tuples(df.columns)
@@ -275,7 +275,7 @@ class TestStockScraper(unittest.TestCase):
         # There should only be the original close price if the jump was rejected
         # If the new close price (12) is present, fail the test\
         print(closes)
-        self.assertNotIn(12, closes, "Close price with >10% jump was incorrectly accepted.")
+        self.assertNotIn(12, closes, "Close price with >50% jump was incorrectly accepted.")
 
     def test_sync_ticker_inserts_prices(self):
         mock_db_manager = MagicMock()

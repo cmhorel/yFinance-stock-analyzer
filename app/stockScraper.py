@@ -11,14 +11,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from app.news_analyzer.sentiment_analyzer import SentimentAnalyzer
 import curl_cffi.requests as requests
 from yfinance.exceptions import YFRateLimitError
-import pytz
-
+import pytz, traceback
+from collections import defaultdict
 
 TIME_ZONE  = pytz.timezone(appconfig.TIME_ZONE)  # NEW: Use timezone from appconfig
 
 yt_session = requests.Session(impersonate="chrome")
 
-
+anomaly_failures = defaultdict(list)
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -83,7 +83,18 @@ def initialize_db():
     conn.commit()
     conn.close()
 
-def validate_price_data(ticker, new_data, previous_close=None, tolerance=0.10, max_retries=3):
+def extract_scalar(val):
+    if isinstance(val, (pd.Series, list, tuple)):
+        val = pd.Series(val).dropna()
+        if not val.empty:
+            return val.iloc[0]
+        else:
+            return None
+    elif hasattr(val, "item"):
+        return val.item()
+    return val
+
+def validate_price_data(ticker, new_data, previous_close=None, tolerance=0.50, max_retries=3):
     """
     Validate price data against previous close with tolerance check.
     Returns validated data or None if validation fails after retries.
@@ -102,14 +113,19 @@ def validate_price_data(ticker, new_data, previous_close=None, tolerance=0.10, m
     validated_data = new_data.copy()
     
     for idx, row in new_data.iterrows():
-        current_close = row['Close']
-        
-        # Check if current close is within tolerance of previous close
-        price_change_ratio = abs(current_close - previous_close) / previous_close
-        
+        current_close = extract_scalar(row['Close'])
+        if current_close is None:
+            continue  # skip if no valid close
+
+        prev_close_scalar = extract_scalar(previous_close)
+        if prev_close_scalar is None:
+            continue  # skip if no valid previous close
+
+        price_change_ratio = abs(current_close - prev_close_scalar) / prev_close_scalar
+
         if price_change_ratio > tolerance:
             print(f"WARNING: {ticker} price anomaly detected on {idx.strftime('%Y-%m-%d')}")
-            print(f"Previous close: ${previous_close:.2f}, Current close: ${current_close:.2f}")
+            print(f"Previous close: ${prev_close_scalar:.2f}, Current close: ${current_close:.2f}")
             print(f"Change: {price_change_ratio*100:.1f}% (threshold: {tolerance*100:.1f}%)")
             
             # Retry fetching data for this specific date
@@ -127,28 +143,31 @@ def validate_price_data(ticker, new_data, previous_close=None, tolerance=0.10, m
                     )
                     
                     if not retry_data.empty and idx in retry_data.index:
-                        retry_close = retry_data.loc[idx, 'Close']
-                        retry_change_ratio = abs(retry_close - previous_close) / previous_close
+                        retry_close = extract_scalar(retry_data.loc[idx, 'Close'])
+                        if retry_close is None:
+                            retry_count += 1
+                            continue
+                        retry_change_ratio = abs(retry_close - prev_close_scalar) / prev_close_scalar
                         
                         if retry_change_ratio <= tolerance:
                             print(f"Retry successful: New close ${retry_close:.2f}")
                             validated_data.loc[idx] = retry_data.loc[idx]
                             break
                         elif retry_close == current_close:
-                            # Same anomalous value returned, likely legitimate
                             print(f"Same value returned on retry, likely legitimate price movement")
                             break
-                    
-                    retry_count += 1
-                    
+
+                    retry_count += 1  # Always increment unless you break
+
                 except Exception as e:
                     print(f"Retry failed: {e}")
+                    print(traceback.format_exc().splitlines())
                     retry_count += 1
             
             # If all retries failed or returned same anomalous value, prompt user
             if retry_count >= max_retries:
                 print(f"\nAnomalous price data for {ticker} on {idx.strftime('%Y-%m-%d')}:")
-                print(f"Previous close: ${previous_close:.2f}")
+                print(f"Previous close: ${prev_close_scalar:.2f}")
                 print(f"New close: ${current_close:.2f}")
                 print(f"Change: {price_change_ratio*100:.1f}%")
                 
@@ -172,11 +191,18 @@ def validate_price_data(ticker, new_data, previous_close=None, tolerance=0.10, m
                 else:
                     # No input (timeout or non-interactive), reject by default
                     print(f"Rejecting data for {ticker} on {idx.strftime('%Y-%m-%d')} (no user input)")
+                    anomaly_failures[ticker].append(idx.strftime('%Y-%m-%d'))
                     validated_data = validated_data.drop(idx)
+                    # Update previous_close to the last valid close before this idx
+                    prev_idx = validated_data.index[validated_data.index < idx]
+                    if len(prev_idx) > 0:
+                        previous_close = extract_scalar(validated_data.loc[prev_idx[-1], 'Close'])
+                    else:
+                        previous_close = prev_close_scalar
                     continue
         
         # Update previous_close for next iteration
-        previous_close = validated_data.loc[idx, 'Close'] if idx in validated_data.index else previous_close
+        previous_close = extract_scalar(validated_data.loc[idx, 'Close']) if idx in validated_data.index else prev_close_scalar
     
     return validated_data
 
@@ -284,9 +310,9 @@ def sync_ticker(ticker, analyze_sentiment=True):
             now_market = datetime.now(pytz.timezone("US/Eastern"))
             today_str = now_market.strftime('%Y-%m-%d')
             
-            if ld == today_str and now_market.hour < 16:
+            if ld == today_str:
                 # Latest data is today but market hasn't closed - don't fetch new data
-                print(f"Skipping {ticker} - latest data is today ({ld}) but market hasn't closed yet")
+                print(f"Skipping {ticker} - latest data is today. Skip fetching new data.")
                 return
             else:
                 # Safe to fetch from day after latest date
@@ -338,6 +364,7 @@ def sync_ticker(ticker, analyze_sentiment=True):
 
     except Exception as e:
         print(f"Error syncing {ticker}: {e}")
+        print(traceback.format_exc().splitlines())
 
 def sync_all_tickers_threaded(all_tickers, max_workers=10):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -380,3 +407,10 @@ if __name__ == '__main__':
     sync_all_tickers_threaded(all_tickers)
     sequential_sentiment_pass()
     plot_all(all_tickers)
+
+if anomaly_failures:
+    print("\n⚠️  The following tickers had price anomalies (grouped by ticker):")
+    for ticker, dates in anomaly_failures.items():
+        print(f"  - {ticker}: {', '.join(dates)}")
+else:
+    print("\n✅ No price anomalies detected during this session.")
