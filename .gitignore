@@ -4,3 +4,5 @@ data/*.db
 # Ignore Python cache files
 **.html
 *.zip
+**.png
+**.html
