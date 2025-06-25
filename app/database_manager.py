@@ -21,6 +21,8 @@ class DatabaseManager:
         if db_path:
             if "file::memory" in db_path:
                 self.inMemory = True
+            else:
+                self.inMemory = False
             self.db_path = db_path
         else:
             self.inMemory = False
@@ -112,6 +114,20 @@ class DatabaseManager:
                     logger.error(f"Error storing price data: {e}")
             conn.commit()
     
+    def get_latest_stock_close_price(self, symbol: str) -> Optional[float]:
+        """Get the latest closing price for a stock."""
+        with self.get_connection() as conn:
+            cursor = conn.execute('''
+                SELECT sp.close
+                FROM stock_prices sp
+                JOIN stocks s ON sp.stock_id = s.id
+                WHERE s.symbol = ?
+                ORDER BY sp.date DESC
+                LIMIT 1
+            ''', (symbol,))
+            result = cursor.fetchone()
+            return float(result[0]) if result else None
+
     def get_stock_data(self, months_back: int = 6) -> pd.DataFrame:
         """Get stock data for analysis."""
         cutoff_date = datetime.now(TIME_ZONE) - timedelta(days=months_back * 30)
@@ -354,6 +370,24 @@ class DatabaseManager:
                 (score, news_id)
             )
             conn.commit()
+
+    def get_stock_close_price_on_date(self, symbol: str, date: str) -> Optional[float]:
+        """
+        Get the closing price for a stock on a specific date.
+        :param symbol: Stock ticker symbol (e.g., 'AAPL')
+        :param date: Date string in 'YYYY-MM-DD' format
+        :return: Closing price as float, or None if not found
+        """
+        with self.get_connection() as conn:
+            cursor = conn.execute('''
+                SELECT sp.close
+                FROM stock_prices sp
+                JOIN stocks s ON sp.stock_id = s.id
+                WHERE s.symbol = ? AND sp.date = ?
+                LIMIT 1
+            ''', (symbol, date))
+            result = cursor.fetchone()
+            return float(result[0]) if result else None
 
 # Create global instance
 db_manager = DatabaseManager()

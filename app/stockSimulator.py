@@ -139,17 +139,17 @@ def calculate_current_portfolio_value():
         quantity = holding[2]
         
         # Get latest price from database
-        cursor = conn.execute('''
-            SELECT sp.close FROM stock_prices sp
-            JOIN stocks s ON sp.stock_id = s.id
-            WHERE s.symbol = ? 
-            ORDER BY sp.date DESC LIMIT 1
-        ''', (symbol,))
-        result = cursor.fetchone()
+        # cursor = conn.execute('''
+        #     SELECT sp.close FROM stock_prices sp
+        #     JOIN stocks s ON sp.stock_id = s.id
+        #     WHERE s.symbol = ? 
+        #     ORDER BY sp.date DESC LIMIT 1
+        # ''', (symbol,))
+        # result = cursor.fetchone()
+        latest_price=db_manager.get_latest_stock_close_price(symbol)
         
-        if result:
-            price = result[0]
-            holdings_value += quantity * price
+        if latest_price:
+            holdings_value += quantity * latest_price
         else:
             print(f"Warning: No price data for {symbol} in database")
     
@@ -412,35 +412,25 @@ def reconstruct_holdings_and_value(target_date, transactions_df):
     for _, tx in day_transactions.iterrows():
         symbol = tx['symbol']
         qty = tx['quantity'] if tx['transaction_type'] == 'BUY' else -tx['quantity']
+        print(f"Processing transaction: {tx['transaction_type']} {qty} of {symbol} on {date_str}")
         holdings[symbol] = holdings.get(symbol, 0) + qty
         if holdings[symbol] <= 0:
             holdings.pop(symbol, None)
     
-    # Calculate holdings value using database prices as fallback
+    # Calculate holdings value using close price from the target date
     holdings_value = 0.0
     if holdings:
-        # Try to get prices from database first (more reliable)
-        conn = sqlite3.connect(appconfig.DB_NAME)
         for symbol, qty in holdings.items():
             price = 0.0
             try:
-                # Get the closest price from database
-                cursor = conn.execute('''
-                    SELECT sp.close FROM stock_prices sp
-                    JOIN stocks s ON sp.stock_id = s.id
-                    WHERE s.symbol = ? AND sp.date <= ?
-                    ORDER BY sp.date DESC LIMIT 1
-                ''', (symbol, date_str))
-                result = cursor.fetchone()
-                if result:
-                    price = result[0]
-                else:
-                    print(f"Warning: No price data found for {symbol} on or before {date_str}")
+                # Use the close price from the target date
+                price = db_manager.get_stock_close_price_on_date(symbol, date_str)
+                if price is None:
+                    print(f"Warning: No price data found for {symbol} on {date_str}")
+                    price = 0.0
             except Exception as e:
                 print(f"Database price lookup failed for {symbol}: {e}")
-            
             holdings_value += qty * price
-        conn.close()
     
     return holdings, holdings_value
 
@@ -475,6 +465,7 @@ def create_portfolio_performance_plot(save_path=appconfig.PLOTS_PATH):
         cash = state_row['cash_balance']
         # Calculate holdings value for this date
         holdings, holdings_value = reconstruct_holdings_and_value(date, transactions_df)
+        print(f"Date: {date_str}, Cash: ${cash:.2f}, Holdings: {holdings}, Holdings Value: ${holdings_value:.2f}")
         cash_values.append(cash)
         holdings_values.append(holdings_value)
         portfolio_values.append(cash + holdings_value)
