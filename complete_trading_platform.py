@@ -82,6 +82,38 @@ class SimplePortfolioRepo:
                     )
                 ''')
                 
+                # Create portfolio history table for tracking value over time
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS portfolio_history (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        portfolio_id INTEGER NOT NULL,
+                        date DATE NOT NULL,
+                        cash_balance DECIMAL(15,2) NOT NULL,
+                        holdings_value DECIMAL(15,2) NOT NULL,
+                        total_value DECIMAL(15,2) NOT NULL,
+                        daily_return DECIMAL(10,6),
+                        created_timestamp TIMESTAMP NOT NULL,
+                        FOREIGN KEY (portfolio_id) REFERENCES portfolios (id),
+                        UNIQUE(portfolio_id, date)
+                    )
+                ''')
+                
+                # Create trades table for tracking all transactions
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS trades (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        portfolio_id INTEGER NOT NULL,
+                        symbol TEXT NOT NULL,
+                        trade_type TEXT NOT NULL, -- 'BUY' or 'SELL'
+                        quantity INTEGER NOT NULL,
+                        price DECIMAL(10,4) NOT NULL,
+                        total_amount DECIMAL(15,2) NOT NULL,
+                        fees DECIMAL(10,2) NOT NULL,
+                        trade_date TIMESTAMP NOT NULL,
+                        FOREIGN KEY (portfolio_id) REFERENCES portfolios (id)
+                    )
+                ''')
+                
                 conn.commit()
                 self.logger.info("Portfolio database tables initialized")
         except Exception as e:
@@ -251,6 +283,123 @@ class SimplePortfolioRepo:
                 self.logger.info(f"Deleted holding with ID {holding_id}")
         except Exception as e:
             self.logger.error(f"Error deleting holding: {e}")
+    
+    async def record_trade(self, portfolio_id: int, symbol: str, trade_type: str, 
+                          quantity: int, price: float, fees: float = 9.99):
+        """Record a trade in the trades table."""
+        import sqlite3
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                total_amount = (price * quantity) + fees if trade_type == 'BUY' else (price * quantity) - fees
+                
+                cursor.execute('''
+                    INSERT INTO trades (portfolio_id, symbol, trade_type, quantity, price, total_amount, fees, trade_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    portfolio_id, symbol, trade_type, quantity, price, total_amount, fees, datetime.now()
+                ))
+                conn.commit()
+                self.logger.info(f"Recorded {trade_type} trade: {quantity} {symbol} @ ${price}")
+        except Exception as e:
+            self.logger.error(f"Error recording trade: {e}")
+    
+    async def record_portfolio_snapshot(self, portfolio_id: int, cash_balance: float, 
+                                       holdings_value: float, total_value: float):
+        """Record a daily portfolio value snapshot."""
+        import sqlite3
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                today = date.today()
+                
+                # Calculate daily return if we have previous data
+                cursor.execute('''
+                    SELECT total_value FROM portfolio_history 
+                    WHERE portfolio_id = ? AND date < ? 
+                    ORDER BY date DESC LIMIT 1
+                ''', (portfolio_id, today))
+                
+                previous_value = cursor.fetchone()
+                daily_return = None
+                if previous_value:
+                    daily_return = (total_value - previous_value[0]) / previous_value[0]
+                
+                # Insert or update today's snapshot
+                cursor.execute('''
+                    INSERT OR REPLACE INTO portfolio_history 
+                    (portfolio_id, date, cash_balance, holdings_value, total_value, daily_return, created_timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    portfolio_id, today, cash_balance, holdings_value, total_value, 
+                    daily_return, datetime.now()
+                ))
+                conn.commit()
+                self.logger.info(f"Recorded portfolio snapshot: ${total_value:,.2f}")
+        except Exception as e:
+            self.logger.error(f"Error recording portfolio snapshot: {e}")
+    
+    async def get_portfolio_history(self, portfolio_id: int, days: int = 30):
+        """Get portfolio value history for the specified number of days."""
+        import sqlite3
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT date, cash_balance, holdings_value, total_value, daily_return
+                    FROM portfolio_history 
+                    WHERE portfolio_id = ? 
+                    ORDER BY date DESC 
+                    LIMIT ?
+                ''', (portfolio_id, days))
+                
+                rows = cursor.fetchall()
+                history = []
+                for row in rows:
+                    history.append({
+                        'date': row[0],
+                        'cash_balance': float(row[1]),
+                        'holdings_value': float(row[2]),
+                        'total_value': float(row[3]),
+                        'daily_return': float(row[4]) if row[4] else 0.0
+                    })
+                
+                return list(reversed(history))  # Return in chronological order
+        except Exception as e:
+            self.logger.error(f"Error getting portfolio history: {e}")
+            return []
+    
+    async def get_trade_history(self, portfolio_id: int, limit: int = 50):
+        """Get trade history for the portfolio."""
+        import sqlite3
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT symbol, trade_type, quantity, price, total_amount, fees, trade_date
+                    FROM trades 
+                    WHERE portfolio_id = ? 
+                    ORDER BY trade_date DESC 
+                    LIMIT ?
+                ''', (portfolio_id, limit))
+                
+                rows = cursor.fetchall()
+                trades = []
+                for row in rows:
+                    trades.append({
+                        'symbol': row[0],
+                        'trade_type': row[1],
+                        'quantity': row[2],
+                        'price': float(row[3]),
+                        'total_amount': float(row[4]),
+                        'fees': float(row[5]),
+                        'trade_date': row[6]
+                    })
+                
+                return trades
+        except Exception as e:
+            self.logger.error(f"Error getting trade history: {e}")
+            return []
 
 
 class StockDataService:
@@ -371,6 +520,50 @@ class AnalysisService:
         self.stock_analysis = StockAnalysisService()
         self.logger = get_logger(__name__)
     
+    def _get_sector_for_symbol(self, symbol: str) -> tuple:
+        """Get sector and industry for a stock symbol."""
+        # Define sector mappings for major stocks
+        sector_map = {
+            # Technology
+            'AAPL': ('Technology', 'Consumer Electronics'),
+            'GOOGL': ('Communication Services', 'Internet Content & Information'),
+            'GOOG': ('Communication Services', 'Internet Content & Information'),
+            'MSFT': ('Technology', 'Software—Infrastructure'),
+            'NVDA': ('Technology', 'Semiconductors'),
+            'META': ('Communication Services', 'Internet Content & Information'),
+            'TSLA': ('Consumer Cyclical', 'Auto Manufacturers'),
+            'NFLX': ('Communication Services', 'Entertainment'),
+            'CRM': ('Technology', 'Software—Application'),
+            'AMD': ('Technology', 'Semiconductors'),
+            
+            # Canadian stocks
+            'SHOP.TO': ('Technology', 'Software—Application'),
+            'SHOP': ('Technology', 'Software—Application'),
+            'RY.TO': ('Financial Services', 'Banks—Diversified'),
+            'TD.TO': ('Financial Services', 'Banks—Diversified'),
+            'BNS.TO': ('Financial Services', 'Banks—Diversified'),
+            'BMO.TO': ('Financial Services', 'Banks—Diversified'),
+            'CNR.TO': ('Industrials', 'Railroads'),
+            'CP.TO': ('Industrials', 'Railroads'),
+            'ENB.TO': ('Energy', 'Oil & Gas Midstream'),
+            'TRP.TO': ('Energy', 'Oil & Gas Midstream'),
+            'CNQ.TO': ('Energy', 'Oil & Gas E&P'),
+            'SU.TO': ('Energy', 'Oil & Gas Integrated'),
+            'WCN.TO': ('Industrials', 'Waste Management'),
+            'CSU.TO': ('Technology', 'Software—Infrastructure'),
+            'BAM.TO': ('Real Estate', 'Real Estate Services'),
+            'ATD.TO': ('Consumer Defensive', 'Specialty Retail'),
+            'L.TO': ('Consumer Defensive', 'Grocery Stores'),
+            'MFC.TO': ('Financial Services', 'Insurance—Life'),
+            'SLF.TO': ('Financial Services', 'Insurance—Life'),
+            'CM.TO': ('Financial Services', 'Banks—Diversified'),
+            'BB.TO': ('Technology', 'Software—Infrastructure'),
+            'WEED.TO': ('Healthcare', 'Drug Manufacturers—Specialty & Generic'),
+            'ACB.TO': ('Healthcare', 'Drug Manufacturers—Specialty & Generic'),
+        }
+        
+        return sector_map.get(symbol, ('Technology', 'Software'))
+    
     async def get_stock_recommendations(self) -> List[Dict[str, Any]]:
         """Get buy/sell recommendations for all stocks."""
         try:
@@ -414,6 +607,16 @@ class AnalysisService:
                     
                     current_price = close_prices[-1]
                     
+                    # Calculate volatility
+                    returns = [close_prices[i]/close_prices[i-1] - 1 for i in range(1, len(close_prices))]
+                    volatility = np.std(returns) * np.sqrt(252) if len(returns) > 1 else 0.2
+                    
+                    # Generate sentiment score (simplified)
+                    sentiment = (rsi - 50) / 100  # Convert RSI to sentiment-like score
+                    
+                    # Get sector information
+                    sector, industry = self._get_sector_for_symbol(stock.symbol)
+                    
                     # Generate recommendation
                     recommendation = "HOLD"
                     confidence = 50
@@ -447,7 +650,11 @@ class AnalysisService:
                         'rsi': rsi,
                         'sma_5': sma_5,
                         'sma_20': sma_20,
-                        'reasons': reasons
+                        'reasons': reasons,
+                        'sector': sector,
+                        'industry': industry,
+                        'sentiment': sentiment,
+                        'volatility': volatility
                     })
                     
                 except Exception as e:
@@ -685,6 +892,14 @@ class PortfolioService:
             portfolio.updated_date = datetime.now()
             await self.portfolio_repo.update_portfolio(portfolio)
             
+            # Record the trade
+            await self.portfolio_repo.record_trade(
+                portfolio.id, symbol, 'BUY', quantity, current_price
+            )
+            
+            # Record portfolio snapshot
+            await self._record_portfolio_snapshot(portfolio.id)
+            
             return {
                 'success': True,
                 'message': f'Successfully bought {quantity} shares of {symbol} at ${current_price:.2f}'
@@ -739,6 +954,14 @@ class PortfolioService:
             portfolio.updated_date = datetime.now()
             await self.portfolio_repo.update_portfolio(portfolio)
             
+            # Record the trade
+            await self.portfolio_repo.record_trade(
+                portfolio.id, symbol, 'SELL', quantity, current_price
+            )
+            
+            # Record portfolio snapshot
+            await self._record_portfolio_snapshot(portfolio.id)
+            
             return {
                 'success': True,
                 'message': f'Successfully sold {quantity} shares of {symbol} at ${current_price:.2f}'
@@ -747,6 +970,22 @@ class PortfolioService:
         except Exception as e:
             self.logger.error(f"Error executing sell order: {e}")
             return {'success': False, 'error': str(e)}
+    
+    async def _record_portfolio_snapshot(self, portfolio_id: int):
+        """Record a portfolio snapshot with current values."""
+        try:
+            # Get current portfolio summary
+            summary = await self.get_portfolio_summary()
+            if 'error' not in summary:
+                cash_balance = summary['cash_balance']
+                total_value = summary['total_value']
+                holdings_value = total_value - cash_balance
+                
+                await self.portfolio_repo.record_portfolio_snapshot(
+                    portfolio_id, cash_balance, holdings_value, total_value
+                )
+        except Exception as e:
+            self.logger.error(f"Error recording portfolio snapshot: {e}")
 
 
 class CompleteTradingPlatform:
@@ -979,6 +1218,102 @@ class CompleteTradingPlatform:
             
             return html
         
+        @self.app.route('/browse-stock-charts')
+        def browse_stock_charts():
+            """Browse stock analysis charts."""
+            import os
+            plots_dir = os.path.join(os.path.abspath('plots'), 'stock_analysis')
+            
+            if not os.path.exists(plots_dir):
+                return "Stock analysis charts not found", 404
+            
+            files = []
+            for filename in os.listdir(plots_dir):
+                if filename.endswith('.html'):
+                    files.append(filename)
+            
+            html = '''
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Browse Stock Analysis Charts</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; }
+                    .container { max-width: 1000px; margin: 0 auto; }
+                    .file-list { list-style: none; padding: 0; }
+                    .file-list li { margin: 10px 0; padding: 10px; background: #f5f5f5; border-radius: 5px; }
+                    .file-list a { text-decoration: none; color: #007bff; font-weight: bold; }
+                    .file-list a:hover { text-decoration: underline; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>📈 Stock Analysis Charts</h1>
+                    <p><a href="/">← Back to Trading Platform</a></p>
+                    <ul class="file-list">
+            '''
+            
+            for file in sorted(files):
+                symbol = file.replace('_analysis.html', '')
+                html += f'<li>📊 <a href="/plots/stock_analysis/{file}" target="_blank">{symbol} Analysis Chart</a></li>'
+            
+            html += '''
+                    </ul>
+                </div>
+            </body>
+            </html>
+            '''
+            
+            return html
+        
+        @self.app.route('/browse-web-demo')
+        def browse_web_demo():
+            """Browse web demo charts."""
+            import os
+            plots_dir = os.path.join(os.path.abspath('plots'), 'web_demo')
+            
+            if not os.path.exists(plots_dir):
+                return "Web demo charts not found", 404
+            
+            files = []
+            for filename in os.listdir(plots_dir):
+                if filename.endswith('.html'):
+                    files.append(filename)
+            
+            html = '''
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Browse Web Demo Charts</title>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 20px; }
+                    .container { max-width: 1000px; margin: 0 auto; }
+                    .file-list { list-style: none; padding: 0; }
+                    .file-list li { margin: 10px 0; padding: 10px; background: #f5f5f5; border-radius: 5px; }
+                    .file-list a { text-decoration: none; color: #007bff; font-weight: bold; }
+                    .file-list a:hover { text-decoration: underline; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>🌐 Web Demo Charts</h1>
+                    <p><a href="/">← Back to Trading Platform</a></p>
+                    <ul class="file-list">
+            '''
+            
+            for file in sorted(files):
+                symbol = file.replace('_analysis.html', '')
+                html += f'<li>🎯 <a href="/plots/web_demo/{file}" target="_blank">{symbol} Demo Chart</a></li>'
+            
+            html += '''
+                    </ul>
+                </div>
+            </body>
+            </html>
+            '''
+            
+            return html
+        
         @self.app.route('/api/charts/generate', methods=['POST'])
         def api_generate_charts():
             """Generate all charts manually."""
@@ -1158,8 +1493,8 @@ class CompleteTradingPlatform:
                         </div>
                         <div>
                             <h4>🔍 Individual Stock Charts</h4>
-                            <a href="/plots/stock_analysis/" target="_blank" class="btn btn-quote">Browse All Stock Charts</a>
-                            <a href="/plots/web_demo/" target="_blank" class="btn btn-quote">Web Demo Charts</a>
+                            <a href="/browse-stock-charts" target="_blank" class="btn btn-quote">Browse All Stock Charts</a>
+                            <a href="/browse-web-demo" target="_blank" class="btn btn-quote">Web Demo Charts</a>
                             <a href="/browse-plots" target="_blank" class="btn btn-quote">📁 Browse All Plots</a>
                         </div>
                     </div>
