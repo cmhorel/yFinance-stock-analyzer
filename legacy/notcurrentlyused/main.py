@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import List, Dict, Any
-from flask import Flask, render_template_string, send_from_directory, jsonify
+from flask import Flask, render_template_string, send_from_directory, jsonify, request
 import threading
 import webbrowser
 import time
@@ -36,6 +36,25 @@ from shared.config import get_settings, setup_logging
 from shared.logging import get_logger
 from domain.entities.stock import Stock, StockPrice, StockInfo
 from infrastructure.database import SqliteStockRepository
+
+# Import portfolio simulator
+try:
+    from legacy.notcurrentlyused.simple_portfolio_simulator import SimplePortfolioSimulator
+    PORTFOLIO_ENABLED = True
+    print("Portfolio simulator loaded successfully!")
+    
+    # Initialize global simulator instance
+    portfolio_simulator = SimplePortfolioSimulator(db_path="data/web_demo_portfolio.db")
+except ImportError as e:
+    print(f"Portfolio simulator not available: {e}")
+    PORTFOLIO_ENABLED = False
+    portfolio_simulator = None
+except Exception as e:
+    print(f"Error loading portfolio simulator: {e}")
+    PORTFOLIO_ENABLED = False
+    portfolio_simulator = None
+
+print(f"PORTFOLIO_ENABLED: {PORTFOLIO_ENABLED}")
 
 # Sector color mapping
 SECTOR_COLORS = {
@@ -557,7 +576,7 @@ def index():
             </div>
             
             <div class="card">
-                <h3>📊 Interactive Visualizations</h3>
+                <h3>📊 Interactive Visualizations & Portfolio</h3>
                 <p>Click the links below to view the generated interactive plots:</p>
                 <a href="/plots/web_demo/sector_overview.html" target="_blank" class="btn success">
                     🎯 Sector Overview Plot
@@ -565,6 +584,11 @@ def index():
                 <a href="/browse" target="_blank" class="btn">
                     📁 Browse All Plots
                 </a>
+                {% if PORTFOLIO_ENABLED %}
+                <a href="/portfolio" class="btn warning">
+                    💼 Portfolio Management
+                </a>
+                {% endif %}
             </div>
             
             <div class="card">
@@ -878,6 +902,521 @@ def serve_plot(filename):
     """Serve plot files."""
     plots_dir = os.path.abspath('plots')
     return send_from_directory(plots_dir, filename)
+
+# Portfolio Management Routes
+if PORTFOLIO_ENABLED:
+    
+    @app.route('/portfolio')
+    def portfolio_dashboard():
+        """Portfolio dashboard page."""
+        summary = portfolio_simulator.get_portfolio_summary()
+        holdings = portfolio_simulator._get_holdings()
+        
+        # Get recent transactions
+        import sqlite3
+        transactions = []
+        try:
+            with sqlite3.connect(portfolio_simulator.db_path) as conn:
+                cursor = conn.execute("SELECT * FROM transactions ORDER BY transaction_date DESC LIMIT 10")
+                for row in cursor.fetchall():
+                    transactions.append({
+                        'date': row[7],
+                        'type': row[2],
+                        'symbol': row[1],
+                        'quantity': row[3],
+                        'price': row[4],
+                        'total': row[5],
+                        'fee': row[6]
+                    })
+        except Exception as e:
+            print(f"Error getting transactions: {e}")
+        
+        html_template = '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Portfolio Dashboard</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+                .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                .header { text-align: center; color: #333; border-bottom: 2px solid #007bff; padding-bottom: 20px; margin-bottom: 30px; }
+                .summary { background: #f0f8ff; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+                .positive { color: green; }
+                .negative { color: red; }
+                table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+                th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                th { background-color: #f2f2f2; }
+                .button { background: #007bff; color: white; padding: 10px 15px; text-decoration: none; border-radius: 3px; margin-right: 10px; }
+                .button:hover { background: #0056b3; }
+                .error { color: red; font-weight: bold; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📈 Portfolio Dashboard</h1>
+                    <p><a href="/">← Back to Home</a> | <a href="/portfolio/trading">Trading</a> | <a href="/portfolio/performance">Performance</a></p>
+                </div>
+                
+                <div class="summary">
+                    <h2>Portfolio Summary</h2>
+                    {% if summary.error %}
+                        <p class="error">{{ summary.error }}</p>
+                    {% else %}
+                        <p><strong>Cash Balance:</strong> ${{ "%.2f"|format(summary.cash_balance) }}</p>
+                        <p><strong>Total Portfolio Value:</strong> ${{ "%.2f"|format(summary.current_value) }}</p>
+                        <p><strong>Total Return:</strong> 
+                            <span class="{{ 'positive' if summary.total_return >= 0 else 'negative' }}">
+                                ${{ "%.2f"|format(summary.total_return) }} ({{ "%.2f"|format(summary.return_percentage) }}%)
+                            </span>
+                        </p>
+                        <p><strong>Holdings:</strong> {{ summary.holdings_count }} positions</p>
+                        <p><strong>Can Trade:</strong> {{ "Yes" if summary.can_trade else "No (wait 24 hours)" }}</p>
+                        <p><strong>Last Transaction:</strong> {{ summary.last_transaction_date or "None" }}</p>
+                    {% endif %}
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <a href="/portfolio/trading" class="button">Manual Trading</a>
+                    <a href="/api/portfolio/auto-trade" class="button" onclick="return confirm('Execute automatic trading?')">Auto Trade</a>
+                    <a href="/portfolio/performance" class="button">View Performance</a>
+                </div>
+                
+                <h2>Current Holdings</h2>
+                {% if holdings %}
+                    <table>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Quantity</th>
+                            <th>Avg Cost</th>
+                            <th>Current Price</th>
+                            <th>Market Value</th>
+                            <th>Gain/Loss</th>
+                            <th>Gain/Loss %</th>
+                        </tr>
+                        {% for holding in holdings %}
+                        <tr>
+                            <td><strong>{{ holding.symbol }}</strong></td>
+                            <td>{{ holding.quantity }}</td>
+                            <td>${{ "%.2f"|format(holding.avg_cost) }}</td>
+                            <td>${{ "%.2f"|format(holding.current_price) }}</td>
+                            <td>${{ "%.2f"|format(holding.market_value) }}</td>
+                            <td class="{{ 'positive' if holding.gain_loss >= 0 else 'negative' }}">
+                                ${{ "%.2f"|format(holding.gain_loss) }}
+                            </td>
+                            <td class="{{ 'positive' if holding.gain_loss_percent >= 0 else 'negative' }}">
+                                {{ "%.2f"|format(holding.gain_loss_percent) }}%
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </table>
+                {% else %}
+                    <p>No holdings found.</p>
+                {% endif %}
+                
+                <h2>Recent Transactions</h2>
+                {% if transactions %}
+                    <table>
+                        <tr>
+                            <th>Date</th>
+                            <th>Type</th>
+                            <th>Symbol</th>
+                            <th>Quantity</th>
+                            <th>Price</th>
+                            <th>Total</th>
+                            <th>Fee</th>
+                        </tr>
+                        {% for tx in transactions %}
+                        <tr>
+                            <td>{{ tx.date }}</td>
+                            <td><strong>{{ tx.type }}</strong></td>
+                            <td>{{ tx.symbol }}</td>
+                            <td>{{ tx.quantity }}</td>
+                            <td>${{ "%.2f"|format(tx.price) }}</td>
+                            <td>${{ "%.2f"|format(tx.total) }}</td>
+                            <td>${{ "%.2f"|format(tx.fee) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </table>
+                {% else %}
+                    <p>No recent transactions.</p>
+                {% endif %}
+            </div>
+        </body>
+        </html>
+        '''
+        
+        return render_template_string(html_template, summary=summary, holdings=holdings, transactions=transactions)
+    
+    @app.route('/portfolio/trading')
+    def portfolio_trading():
+        """Trading interface page."""
+        html_template = '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Portfolio Trading</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+                .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                .header { text-align: center; color: #333; border-bottom: 2px solid #007bff; padding-bottom: 20px; margin-bottom: 30px; }
+                .trading-form { background: #f9f9f9; padding: 20px; border-radius: 5px; margin-bottom: 20px; max-width: 500px; }
+                .form-group { margin-bottom: 15px; }
+                label { display: block; margin-bottom: 5px; font-weight: bold; }
+                input, select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 3px; }
+                .button { background: #007bff; color: white; padding: 10px 15px; border: none; border-radius: 3px; cursor: pointer; }
+                .button:hover { background: #0056b3; }
+                .buy-button { background: #28a745; }
+                .buy-button:hover { background: #1e7e34; }
+                .sell-button { background: #dc3545; }
+                .sell-button:hover { background: #c82333; }
+                .quote-info { background: #e9ecef; padding: 15px; border-radius: 5px; margin-top: 10px; }
+                .message { padding: 10px; border-radius: 3px; margin-bottom: 15px; }
+                .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+                .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+            </style>
+            <script>
+                async function getQuote() {
+                    const symbol = document.getElementById('symbol').value.toUpperCase();
+                    if (!symbol) return;
+                    
+                    try {
+                        const response = await fetch(`/api/portfolio/quote/${symbol}`);
+                        const data = await response.json();
+                        
+                        const quoteDiv = document.getElementById('quote-info');
+                        if (data.error) {
+                            quoteDiv.innerHTML = `<p style="color: red;">Error: ${data.error}</p>`;
+                        } else {
+                            quoteDiv.innerHTML = `
+                                <h3>${data.symbol} - ${data.name}</h3>
+                                <p><strong>Current Price:</strong> $${data.current_price ? data.current_price.toFixed(2) : 'N/A'}</p>
+                                <p><strong>Sector:</strong> ${data.sector}</p>
+                                <p><strong>Industry:</strong> ${data.industry}</p>
+                            `;
+                        }
+                    } catch (error) {
+                        document.getElementById('quote-info').innerHTML = `<p style="color: red;">Error fetching quote: ${error}</p>`;
+                    }
+                }
+                
+                async function executeTrade(action) {
+                    const symbol = document.getElementById('symbol').value.toUpperCase();
+                    const quantity = parseInt(document.getElementById('quantity').value);
+                    
+                    if (!symbol || !quantity || quantity <= 0) {
+                        alert('Please enter valid symbol and quantity');
+                        return;
+                    }
+                    
+                    if (!confirm(`${action.toUpperCase()} ${quantity} shares of ${symbol}?`)) {
+                        return;
+                    }
+                    
+                    try {
+                        const response = await fetch(`/api/portfolio/${action}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ symbol, quantity })
+                        });
+                        
+                        const data = await response.json();
+                        const messageDiv = document.getElementById('message');
+                        
+                        if (data.error) {
+                            messageDiv.innerHTML = `<div class="message error">${data.error}</div>`;
+                        } else {
+                            messageDiv.innerHTML = `<div class="message success">${data.message}</div>`;
+                            document.getElementById('quantity').value = '';
+                        }
+                    } catch (error) {
+                        document.getElementById('message').innerHTML = `<div class="message error">Error: ${error}</div>`;
+                    }
+                }
+            </script>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📊 Portfolio Trading</h1>
+                    <p><a href="/portfolio">← Back to Dashboard</a> | <a href="/">Home</a></p>
+                </div>
+                
+                <div id="message"></div>
+                
+                <div class="trading-form">
+                    <h2>Stock Quote & Trading</h2>
+                    
+                    <div class="form-group">
+                        <label for="symbol">Stock Symbol:</label>
+                        <input type="text" id="symbol" placeholder="e.g., AAPL" style="text-transform: uppercase;">
+                        <button type="button" onclick="getQuote()" class="button" style="margin-top: 10px;">Get Quote</button>
+                    </div>
+                    
+                    <div id="quote-info" class="quote-info" style="display: none;"></div>
+                    
+                    <div class="form-group">
+                        <label for="quantity">Quantity:</label>
+                        <input type="number" id="quantity" min="1" placeholder="Number of shares">
+                    </div>
+                    
+                    <div class="form-group">
+                        <button type="button" onclick="executeTrade('buy')" class="button buy-button">BUY</button>
+                        <button type="button" onclick="executeTrade('sell')" class="button sell-button">SELL</button>
+                    </div>
+                </div>
+                
+                <script>
+                    // Show quote info div when symbol is entered
+                    document.getElementById('symbol').addEventListener('input', function() {
+                        document.getElementById('quote-info').style.display = this.value ? 'block' : 'none';
+                    });
+                </script>
+            </div>
+        </body>
+        </html>
+        '''
+        
+        return render_template_string(html_template)
+    
+    @app.route('/portfolio/performance')
+    def portfolio_performance():
+        """Portfolio performance page with charts."""
+        performance_data = portfolio_service.get_portfolio_performance_data()
+        
+        html_template = '''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Portfolio Performance</title>
+            <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+                .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                .header { text-align: center; color: #333; border-bottom: 2px solid #007bff; padding-bottom: 20px; margin-bottom: 30px; }
+                .chart-container { margin-bottom: 30px; }
+                .error { color: red; font-weight: bold; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <div class="header">
+                    <h1>📈 Portfolio Performance</h1>
+                    <p><a href="/portfolio">← Back to Dashboard</a> | <a href="/">Home</a></p>
+                </div>
+                
+                {% if performance_data.error %}
+                    <p class="error">{{ performance_data.error }}</p>
+                {% else %}
+                    <div class="chart-container">
+                        <div id="portfolio-chart" style="width:100%;height:400px;"></div>
+                    </div>
+                    
+                    <div class="chart-container">
+                        <div id="composition-chart" style="width:100%;height:300px;"></div>
+                    </div>
+                    
+                    <script>
+                        // Portfolio value over time
+                        var portfolioTrace = {
+                            x: {{ performance_data.dates | tojson }},
+                            y: {{ performance_data.portfolio_values | tojson }},
+                            type: 'scatter',
+                            mode: 'lines+markers',
+                            name: 'Portfolio Value',
+                            line: { color: 'blue', width: 2 }
+                        };
+                        
+                        var initialLine = {
+                            x: {{ performance_data.dates | tojson }},
+                            y: Array({{ performance_data.dates | length }}).fill({{ performance_data.initial_value }}),
+                            type: 'scatter',
+                            mode: 'lines',
+                            name: 'Initial Investment',
+                            line: { color: 'gray', dash: 'dash' }
+                        };
+                        
+                        var portfolioLayout = {
+                            title: 'Portfolio Value Over Time',
+                            xaxis: { title: 'Date' },
+                            yaxis: { title: 'Value ($)' },
+                            hovermode: 'x unified'
+                        };
+                        
+                        Plotly.newPlot('portfolio-chart', [portfolioTrace, initialLine], portfolioLayout);
+                        
+                        // Portfolio composition
+                        var cashTrace = {
+                            x: {{ performance_data.dates | tojson }},
+                            y: {{ performance_data.cash_values | tojson }},
+                            type: 'scatter',
+                            mode: 'lines',
+                            name: 'Cash',
+                            fill: 'tonexty',
+                            line: { color: 'green' }
+                        };
+                        
+                        var holdingsTrace = {
+                            x: {{ performance_data.dates | tojson }},
+                            y: {{ performance_data.holdings_values | tojson }},
+                            type: 'scatter',
+                            mode: 'lines',
+                            name: 'Holdings',
+                            line: { color: 'orange' }
+                        };
+                        
+                        var compositionLayout = {
+                            title: 'Portfolio Composition',
+                            xaxis: { title: 'Date' },
+                            yaxis: { title: 'Value ($)' },
+                            hovermode: 'x unified'
+                        };
+                        
+                        Plotly.newPlot('composition-chart', [cashTrace, holdingsTrace], compositionLayout);
+                    </script>
+                {% endif %}
+            </div>
+        </body>
+        </html>
+        '''
+        
+        return render_template_string(html_template, performance_data=performance_data)
+    
+    # API Routes
+    @app.route('/api/portfolio/summary')
+    def api_portfolio_summary():
+        """API endpoint for portfolio summary."""
+        return jsonify(portfolio_simulator.get_portfolio_summary())
+    
+    @app.route('/api/portfolio/holdings')
+    def api_portfolio_holdings():
+        """API endpoint for portfolio holdings."""
+        return jsonify(portfolio_simulator._get_holdings())
+    
+    @app.route('/api/portfolio/quote/<symbol>')
+    def api_stock_quote(symbol):
+        """API endpoint for stock quotes."""
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            info = ticker.info
+            hist = ticker.history(period="1d")
+            
+            if hist.empty:
+                return jsonify({'error': f'No data found for {symbol}'})
+            
+            current_price = hist['Close'].iloc[-1]
+            
+            return jsonify({
+                'symbol': symbol,
+                'name': info.get('longName', symbol),
+                'current_price': float(current_price),
+                'sector': info.get('sector', 'Unknown'),
+                'industry': info.get('industry', 'Unknown')
+            })
+        except Exception as e:
+            return jsonify({'error': str(e)})
+    
+    @app.route('/api/portfolio/buy', methods=['POST'])
+    def api_buy_stock():
+        """API endpoint for buying stocks."""
+        data = request.get_json()
+        symbol = data.get('symbol', '').upper()
+        quantity = data.get('quantity', 0)
+        
+        if not symbol or quantity <= 0:
+            return jsonify({'error': 'Invalid symbol or quantity'}), 400
+        
+        try:
+            # Get current price
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="1d")
+            
+            if hist.empty:
+                return jsonify({'error': f'No price data found for {symbol}'})
+            
+            current_price = Decimal(str(hist['Close'].iloc[-1]))
+            
+            # Execute buy order
+            success = portfolio_simulator._execute_buy(symbol, quantity, current_price)
+            
+            if success:
+                return jsonify({
+                    'message': f'Successfully bought {quantity} shares of {symbol} at ${current_price:.2f}',
+                    'symbol': symbol,
+                    'quantity': quantity,
+                    'price': float(current_price)
+                })
+            else:
+                return jsonify({'error': 'Failed to execute buy order'})
+                
+        except Exception as e:
+            return jsonify({'error': str(e)})
+    
+    @app.route('/api/portfolio/sell', methods=['POST'])
+    def api_sell_stock():
+        """API endpoint for selling stocks."""
+        data = request.get_json()
+        symbol = data.get('symbol', '').upper()
+        quantity = data.get('quantity', 0)
+        
+        if not symbol or quantity <= 0:
+            return jsonify({'error': 'Invalid symbol or quantity'}), 400
+        
+        try:
+            # Get current price
+            import yfinance as yf
+            ticker = yf.Ticker(symbol)
+            hist = ticker.history(period="1d")
+            
+            if hist.empty:
+                return jsonify({'error': f'No price data found for {symbol}'})
+            
+            current_price = Decimal(str(hist['Close'].iloc[-1]))
+            
+            # Execute sell order
+            success = portfolio_simulator._execute_sell(symbol, quantity, current_price)
+            
+            if success:
+                return jsonify({
+                    'message': f'Successfully sold {quantity} shares of {symbol} at ${current_price:.2f}',
+                    'symbol': symbol,
+                    'quantity': quantity,
+                    'price': float(current_price)
+                })
+            else:
+                return jsonify({'error': 'Failed to execute sell order'})
+                
+        except Exception as e:
+            return jsonify({'error': str(e)})
+    
+    @app.route('/api/portfolio/auto-trade')
+    def api_auto_trade():
+        """API endpoint for automatic trading."""
+        try:
+            def run_auto_trade():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result = loop.run_until_complete(portfolio_simulator.simulate_trading_day())
+                loop.close()
+                return result
+            
+            result = run_auto_trade()
+            return jsonify({
+                'message': f'Auto-trading completed: {result["total_trades"]} trades executed',
+                'trades': result['trades_executed'],
+                'portfolio_value_before': float(result['portfolio_value_before']),
+                'portfolio_value_after': float(result['portfolio_value_after'])
+            })
+        except Exception as e:
+            return jsonify({'error': str(e)})
+
+else:
+    # Portfolio not enabled - create dummy routes
+    @app.route('/portfolio')
+    def portfolio_disabled():
+        return "Portfolio functionality not available", 404
 
 def open_browser():
     """Open browser after a short delay."""
