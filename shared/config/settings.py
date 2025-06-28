@@ -108,6 +108,16 @@ class LoggingSettings:
 
 
 @dataclass
+class BackgroundTaskSettings:
+    """Background task configuration settings."""
+    enabled: bool = True
+    stock_refresh_interval_hours: float = 4.0
+    portfolio_snapshot_interval_hours: float = 12.0
+    run_stock_refresh_immediately: bool = False
+    run_portfolio_snapshot_immediately: bool = True
+
+
+@dataclass
 class Settings:
     """Main application settings container."""
     database: DatabaseSettings
@@ -116,6 +126,7 @@ class Settings:
     news: NewsSettings
     plotting: PlottingSettings
     logging: LoggingSettings
+    background_tasks: BackgroundTaskSettings
     
     # General settings
     timezone: str = "US/Mountain"
@@ -164,6 +175,13 @@ class Settings:
                 file_path=os.getenv('LOG_FILE_PATH'),
                 max_file_size=int(os.getenv('LOG_MAX_SIZE', str(10 * 1024 * 1024)))
             ),
+            background_tasks=BackgroundTaskSettings(
+                enabled=os.getenv('BACKGROUND_TASKS_ENABLED', 'true').lower() == 'true',
+                stock_refresh_interval_hours=float(os.getenv('STOCK_REFRESH_INTERVAL_HOURS', '4.0')),
+                portfolio_snapshot_interval_hours=float(os.getenv('PORTFOLIO_SNAPSHOT_INTERVAL_HOURS', '12.0')),
+                run_stock_refresh_immediately=os.getenv('RUN_STOCK_REFRESH_IMMEDIATELY', 'false').lower() == 'true',
+                run_portfolio_snapshot_immediately=os.getenv('RUN_PORTFOLIO_SNAPSHOT_IMMEDIATELY', 'true').lower() == 'true'
+            ),
             timezone=os.getenv('TIMEZONE', 'US/Mountain'),
             environment=os.getenv('ENVIRONMENT', 'development'),
             debug=os.getenv('DEBUG', 'false').lower() == 'true'
@@ -190,6 +208,13 @@ class Settings:
         
         if self.analysis.rsi_period <= 0:
             errors.append("RSI period must be positive")
+        
+        # Validate background task settings
+        if self.background_tasks.stock_refresh_interval_hours <= 0:
+            errors.append("Stock refresh interval must be positive")
+        
+        if self.background_tasks.portfolio_snapshot_interval_hours <= 0:
+            errors.append("Portfolio snapshot interval must be positive")
         
         # Validate timezone
         try:

@@ -26,6 +26,7 @@ import json
 sys.path.append(os.path.dirname(__file__))
 
 from shared.config import setup_logging
+from shared.config.settings import Settings
 from shared.logging import get_logger
 from infrastructure.database.sqlite_stock_repository import SqliteStockRepository
 from domain.entities.stock import Stock, StockPrice, StockInfo
@@ -33,6 +34,7 @@ from domain.entities.portfolio import Portfolio, PortfolioHolding
 from domain.services.technical_analysis_service import TechnicalAnalysisService
 from domain.services.stock_analysis_service import StockAnalysisService
 from domain.services.chart_generation_service import ChartGenerationService
+from application.services.background_task_service import BackgroundTaskService
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -995,6 +997,9 @@ class CompleteTradingPlatform:
         setup_logging()
         self.logger = get_logger(__name__)
         
+        # Load settings
+        self.settings = Settings.from_env()
+        
         # Initialize repositories
         self.stock_repo = SqliteStockRepository(db_path=db_path)
         
@@ -1020,11 +1025,93 @@ class CompleteTradingPlatform:
             self.portfolio_repo
         )
         
+        # Initialize background task service
+        self.background_service = BackgroundTaskService()
+        self._setup_background_tasks()
+        
         # Flask app
         self.app = Flask(__name__)
         self._setup_routes()
         
         self.logger.info(f"Initialized complete trading platform with database: {db_path}")
+    
+    def _setup_background_tasks(self):
+        """Setup background tasks for periodic operations."""
+        if not self.settings.background_tasks.enabled:
+            self.logger.info("Background tasks are disabled in settings")
+            return
+        
+        # Add stock price refresh task (every 4 hours)
+        self.background_service.add_task(
+            name="stock_price_refresh",
+            coro_func=self._refresh_stock_prices,
+            interval_hours=self.settings.background_tasks.stock_refresh_interval_hours,
+            run_immediately=self.settings.background_tasks.run_stock_refresh_immediately
+        )
+        
+        # Add portfolio snapshot task (every 12 hours)
+        self.background_service.add_task(
+            name="portfolio_snapshot",
+            coro_func=self._record_portfolio_snapshot,
+            interval_hours=self.settings.background_tasks.portfolio_snapshot_interval_hours,
+            run_immediately=self.settings.background_tasks.run_portfolio_snapshot_immediately
+        )
+        
+        self.logger.info("Background tasks configured successfully")
+    
+    async def _refresh_stock_prices(self):
+        """Background task to refresh all stock prices."""
+        self.logger.info("🔄 Starting background stock price refresh...")
+        try:
+            result = await self.stock_data_service.load_all_stocks_on_startup()
+            self.logger.info(
+                f"✅ Background stock refresh completed: "
+                f"{result['loaded_count']} loaded, {result['failed_count']} failed"
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Error in background stock refresh: {e}")
+    
+    async def _record_portfolio_snapshot(self):
+        """Background task to record portfolio snapshot."""
+        self.logger.info("📸 Recording portfolio snapshot...")
+        try:
+            # Get the default portfolio
+            portfolios = await self.portfolio_repo.get_all_portfolios()
+            if portfolios:
+                portfolio = portfolios[0]
+                
+                # Get current portfolio summary
+                summary = await self.portfolio_service.get_portfolio_summary()
+                if 'error' not in summary:
+                    cash_balance = summary['cash_balance']
+                    total_value = summary['total_value']
+                    holdings_value = total_value - cash_balance
+                    
+                    # Record the snapshot
+                    await self.portfolio_repo.record_portfolio_snapshot(
+                        portfolio.id, cash_balance, holdings_value, total_value
+                    )
+                    
+                    self.logger.info(f"✅ Portfolio snapshot recorded: ${total_value:,.2f}")
+                else:
+                    self.logger.error(f"❌ Error getting portfolio summary: {summary.get('error')}")
+            else:
+                self.logger.warning("⚠️ No portfolio found for snapshot")
+        except Exception as e:
+            self.logger.error(f"❌ Error recording portfolio snapshot: {e}")
+    
+    def start_background_tasks(self):
+        """Start the background task service."""
+        if self.settings.background_tasks.enabled:
+            self.background_service.start()
+            self.logger.info("🚀 Background tasks started")
+        else:
+            self.logger.info("Background tasks are disabled")
+    
+    def stop_background_tasks(self):
+        """Stop the background task service."""
+        self.background_service.stop()
+        self.logger.info("🛑 Background tasks stopped")
     
     def _setup_routes(self):
         """Setup Flask routes."""
@@ -1378,6 +1465,20 @@ class CompleteTradingPlatform:
                 'stock_charts': stock_charts,
                 'overview_charts': overview_charts,
                 'last_updated': datetime.now().isoformat()
+            })
+        
+        @self.app.route('/api/background-tasks/status')
+        def api_background_tasks_status():
+            """Get background tasks status."""
+            return jsonify(self.background_service.get_task_status())
+        
+        @self.app.route('/api/background-tasks/force-run/<task_name>', methods=['POST'])
+        def api_force_run_task(task_name):
+            """Force run a specific background task."""
+            success = self.background_service.force_run_task(task_name)
+            return jsonify({
+                'success': success,
+                'message': f'Task {task_name} {"scheduled for immediate execution" if success else "could not be executed"}'
             })
     
     def _render_complete_dashboard(self):
@@ -2101,6 +2202,9 @@ async def main():
     platform = CompleteTradingPlatform()
     
     try:
+        # Start background tasks
+        platform.start_background_tasks()
+        
         # Load all stocks in background
         def load_stocks():
             loop = asyncio.new_event_loop()
@@ -2132,6 +2236,7 @@ async def main():
         print("🔄 Stocks are loading in the background...")
         print("💰 Portfolio initialized with $100,000")
         print("🤖 AI-powered analysis and auto-trading ready!")
+        print("🕐 Background tasks: Stock refresh every 4h, Portfolio snapshots every 12h")
         print("\n🎯 ADVANCED FEATURES AVAILABLE:")
         print("   ✅ Real-time stock quotes")
         print("   ✅ Buy/sell orders with validation")
@@ -2142,6 +2247,7 @@ async def main():
         print("   ✅ Confidence-based trade execution")
         print("   ✅ Centralized database")
         print("   ✅ Auto-refreshing data")
+        print("   ✅ Automated background tasks")
         print("\nPress Ctrl+C to stop the server")
         print("=" * 60)
         
@@ -2150,10 +2256,12 @@ async def main():
         
     except KeyboardInterrupt:
         print("\n👋 Shutting down complete trading platform...")
+        platform.stop_background_tasks()
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
+        platform.stop_background_tasks()
 
 
 if __name__ == "__main__":
